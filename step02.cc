@@ -1,38 +1,39 @@
 // Introduced `bool done = false`.
-// The ugly way to stop at seven.
+// The less ugly way to stop at fifteen is to introduce internal state.
 
 #include <iostream>
 #include <string>
 #include <functional>
+#include <queue>
 
 using std::cout;
 using std::endl;
 using std::string;
 using std::to_string;
 using std::function;
+using std::queue;
 
 struct FizzBuzzGenerator {
   int value = 0;
   bool done = false;
+  queue<string> next_values;
   void Next(function<void(string)> cb) {
-    ++value;
-    bool const d3 = (value % 3 == 0);
-    bool const d5 = (value % 3 == 0);
-    if (d3) {
-      cb("Fizz");
-      if (done) {
-        return;
+    if (next_values.empty()) {
+      ++value;
+      bool const d3 = (value % 3 == 0);
+      bool const d5 = (value % 5 == 0);
+      if (d3) {
+        next_values.push("Fizz");
+      }
+      if (d5) {
+        next_values.push("Buzz");
+      }
+      if (!d3 && !d5) {
+        next_values.push(to_string(value));
       }
     }
-    if (d5) {
-      cb("Buzz");
-      if (done) {
-        return;
-      }
-    }
-    if (!d3 && !d5) {
-      cb(to_string(value));
-    }
+    cb(next_values.front());
+    next_values.pop();
   }
 };
 
@@ -47,12 +48,9 @@ int main() {
 
   FizzBuzzGenerator g;
   int total = 0;
-  while (!g.done) {
-    g.Next([&total, &g](string s) {
+  while (total < 15) {
+    g.Next([&total](string s) {
       cout << ++total << " : " << s << endl;
-      if (total >= 7) {
-        g.done = true;
-      }
     });
   }
 }

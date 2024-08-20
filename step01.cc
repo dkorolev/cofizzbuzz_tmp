@@ -1,5 +1,5 @@
 // Initial FizzBuzz.
-// Note how is prints eight, not seven rows.
+// Note how is prints sixteen, not fifteen rows, due to double output on fifteen.
 
 #include <iostream>
 #include <string>
@@ -16,7 +16,7 @@ struct FizzBuzzGenerator {
   void Next(function<void(string)> cb) {
     ++value;
     bool const d3 = (value % 3 == 0);
-    bool const d5 = (value % 3 == 0);
+    bool const d5 = (value % 5 == 0);
     if (d3) {
       cb("Fizz");
     }
@@ -40,7 +40,7 @@ int main() {
 
   FizzBuzzGenerator g;
   int total = 0;
-  while (total < 7) {
+  while (total < 16) {
     g.Next([&total](string s) {
       cout << ++total << " : " << s << endl;
     });
