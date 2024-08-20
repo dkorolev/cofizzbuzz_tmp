@@ -87,7 +87,7 @@ struct ExecutorInstance {
         }
       }
       // NOTE(dkorolev): This is a "busy wait" loop, but it does the job for illustrative purposes.
-      //                 Can of course `wait` + `wait_for` on a `condition_variable` if this code goes to prod.
+      //                 Should of course `wait` + `wait_for` on a `condition_variable` if this code goes to prod.
       sleep_for(100us);  // 0.1ms.
     }
   }
