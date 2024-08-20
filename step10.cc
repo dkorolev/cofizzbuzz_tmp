@@ -1,8 +1,5 @@
 // Introducing the executor: the thread that runs all the async stuff.
 
-// TODO(dkorolev): Illustrate the purpose of `[std::]move` everywhere.
-// TODO(dkorolev): Remove `std::` everywhere in all files!
-
 #include <iostream>
 #include <string>
 #include <functional>
@@ -19,7 +16,6 @@
 using std::cout;
 using std::endl;
 using std::function;
-using std::move;
 using std::queue;
 using std::string;
 using std::to_string;
@@ -29,6 +25,7 @@ using std::atomic_int;
 using std::future;
 using std::lock_guard;
 using std::make_shared;
+using std::make_unique;
 using std::multimap;
 using std::mutex;
 using std::promise;
@@ -70,7 +67,7 @@ struct ExecutorInstance {
 
   void Schedule(milliseconds delay, function<void()> code) {
     lock_guard<mutex> lock(mut);
-    jobs.emplace((TimestampMS() - t0) + delay.count(), move(code));
+    jobs.emplace((TimestampMS() - t0) + delay.count(), code);
   }
 
   function<void()> GetNextTask() {
@@ -83,7 +80,7 @@ struct ExecutorInstance {
         if (!jobs.empty()) {
           auto it = jobs.begin();
           if ((TimestampMS() - t0) >= it->first) {
-            function<void()> extracted = move(it->second);
+            function<void()> extracted = it->second;
             jobs.erase(it);
             return extracted;
           }
@@ -152,7 +149,7 @@ struct FizzBuzzGenerator {
       function<void(string)> cb;
       function<void()> next;
       AsyncCaller(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-          : self(self), cb(move(cb)), next(move(next)) {
+          : self(self), cb(cb), next(next) {
       }
       mutex mut;
       bool has_d3 = false;
@@ -170,7 +167,7 @@ struct FizzBuzzGenerator {
           if (!d3 && !d5) {
             self->next_values.push(to_string(self->value));
           }
-          self->InvokeCbThenNext(move(cb), move(next));
+          self->InvokeCbThenNext(cb, next);
         }
       }
     };
@@ -178,7 +175,7 @@ struct FizzBuzzGenerator {
       InvokeCbThenNext(cb, next);
     } else {
       ++value;
-      auto shared_async_caller_instance = make_shared<AsyncCaller>(this, move(cb), move(next));
+      auto shared_async_caller_instance = make_shared<AsyncCaller>(this, cb, next);
       IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) {
         lock_guard<mutex> lock(shared_async_caller_instance->mut);
         shared_async_caller_instance->d3 = d3;
@@ -212,6 +209,7 @@ int main() {
   // A quick & hacky way to wait until everything is done.
   mutex unlocked_when_done;
   unlocked_when_done.lock();
+
   function<void(string)> Print = [&total, &t0](string s) {
     auto t1 = TimestampMS();
     cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
