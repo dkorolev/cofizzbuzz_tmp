@@ -143,50 +143,57 @@ struct FizzBuzzGenerator {
     next_values.pop();
     next();
   }
-  void Next(function<void(string)> cb, function<void()> next) {
-    struct AsyncCaller {
-      FizzBuzzGenerator* self;
-      function<void(string)> cb;
-      function<void()> next;
-      AsyncCaller(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-          : self(self), cb(cb), next(next) {
-      }
-      mutex mut;
-      bool has_d3 = false;
-      bool has_d5 = false;
-      bool d3;
-      bool d5;
-      void ActIfHasAllInputs() {
-        if (has_d3 && has_d5) {
-          if (d3) {
-            self->next_values.push("Fizz");
-          }
-          if (d5) {
-            self->next_values.push("Buzz");
-          }
-          if (!d3 && !d5) {
-            self->next_values.push(to_string(self->value));
-          }
-          self->InvokeCbThenNext(cb, next);
+  struct AsyncNextStepLogic {
+    FizzBuzzGenerator* self;
+    function<void(string)> cb;
+    function<void()> next;
+    AsyncNextStepLogic(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
+        : self(self), cb(cb), next(next) {
+    }
+    mutex mut;
+    bool has_d3 = false;
+    bool has_d5 = false;
+    bool d3;
+    bool d5;
+    void SetD3(bool d3_value) {
+      lock_guard<mutex> lock(mut);
+      d3 = d3_value;
+      has_d3 = true;
+      ActIfHasAllInputs();
+    }
+    void SetD5(bool d5_value) {
+      lock_guard<mutex> lock(mut);
+      d5 = d5_value;
+      has_d5 = true;
+      ActIfHasAllInputs();
+    }
+    void ActIfHasAllInputs() {
+      if (has_d3 && has_d5) {
+        if (d3) {
+          self->next_values.push("Fizz");
         }
+        if (d5) {
+          self->next_values.push("Buzz");
+        }
+        if (!d3 && !d5) {
+          self->next_values.push(to_string(self->value));
+        }
+        self->InvokeCbThenNext(cb, next);
       }
-    };
+    }
+  };
+  void Next(function<void(string)> cb, function<void()> next) {
     if (!next_values.empty()) {
       InvokeCbThenNext(cb, next);
     } else {
       ++value;
-      auto shared_async_caller_instance = make_shared<AsyncCaller>(this, cb, next);
+      // Need a shared instance so that it outlives both the called and either of the async calls.
+      auto shared_async_caller_instance = make_shared<AsyncNextStepLogic>(this, cb, next);
       IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) {
-        lock_guard<mutex> lock(shared_async_caller_instance->mut);
-        shared_async_caller_instance->d3 = d3;
-        shared_async_caller_instance->has_d3 = true;
-        shared_async_caller_instance->ActIfHasAllInputs();
+        shared_async_caller_instance->SetD3(d3);
       });
       IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) {
-        lock_guard<mutex> lock(shared_async_caller_instance->mut);
-        shared_async_caller_instance->d5 = d5;
-        shared_async_caller_instance->has_d5 = true;
-        shared_async_caller_instance->ActIfHasAllInputs();
+        shared_async_caller_instance->SetD5(d5);
       });
     }
   }
@@ -215,6 +222,7 @@ int main() {
     cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
     t0 = t1;
   };
+
   function<void()> KeepGoing = [&]() {
     if (total < 15) {
       g.Next(Print, KeepGoing);
@@ -223,6 +231,7 @@ int main() {
     }
   };
   KeepGoing();
+
   // NOTE(dkorolev): Now we must wait, otherwise the destroyed instance of `g` will be used from other threads.
   unlocked_when_done.lock();
   Executor().GracefulShutdown();
