@@ -105,8 +105,12 @@ struct ExecutorInstance {
     }
     name = goal;
 
-    function<void()> next_task;
-    while (next_task = GetNextTask()) {
+    while (true) {
+      // `GetNextTask()` a) is the blocking call, and b) returns `nullptr` once signaled termination.
+      function<void()> next_task = GetNextTask();
+      if (!next_task) {
+        return;
+      }
       next_task();
     }
   }
