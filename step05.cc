@@ -5,7 +5,7 @@
 #include <functional>
 #include <queue>
 #include <thread>
-#include <chrono>  // IWYU pragma: keep
+#include <chrono>
 
 using std::cout;
 using std::endl;
