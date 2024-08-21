@@ -265,14 +265,14 @@ struct FizzBuzzGenerator {
 
 // The "minimalistic" coroutine runner.
 // It does `.resume()` once, and then waits until `final_suspend` was invoked on its `promise_type`.
-struct ResumeOnceTask {
+struct Coroutine {
   struct promise_type {
     mutex unlocked_when_coro_done;
 
     using handle_type = std::coroutine_handle<promise_type>;
 
-    ResumeOnceTask get_return_object() {
-      return ResumeOnceTask(handle_type::from_promise(*this), unlocked_when_coro_done);
+    Coroutine get_return_object() {
+      return Coroutine(handle_type::from_promise(*this), unlocked_when_coro_done);
     }
 
     std::suspend_always initial_suspend() noexcept {
@@ -292,7 +292,7 @@ struct ResumeOnceTask {
     }
   };
 
-  explicit ResumeOnceTask(promise_type::handle_type coro, mutex& unlocked_when_coro_done)
+  explicit Coroutine(promise_type::handle_type coro, mutex& unlocked_when_coro_done)
       : coro(coro), unlocked_when_coro_done(unlocked_when_coro_done) {
     ExecutorForThisThread().FailIfNoExecutor();
     unlocked_when_coro_done.lock();
@@ -331,7 +331,7 @@ class Sleep final {
 };
 
 void RunExampleCoroutine() {
-  function<ResumeOnceTask(string)> MultiStepFunction = [](string s) -> ResumeOnceTask {
+  function<Coroutine(string)> MultiStepFunction = [](string s) -> Coroutine {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
       cout << s << ", i=" << i << "/10." << endl;
@@ -339,8 +339,8 @@ void RunExampleCoroutine() {
   };
 
   ExecutorScope executor;
-  ResumeOnceTask task = MultiStepFunction("The MultiStepFunction");
-  task.RunToCompletion();
+  Coroutine coro = MultiStepFunction("The MultiStepFunction");
+  coro.RunToCompletion();
 }
 
 int main() {
