@@ -479,7 +479,7 @@ inline Coro<void> CallSleep(milliseconds ms) {
 
 inline Coro<int> Square(int x) {
   co_await CallSleep(1ms);
-  co_return x* x;
+  co_return (x * x);
 }
 
 void RunExampleCoroutine() {
