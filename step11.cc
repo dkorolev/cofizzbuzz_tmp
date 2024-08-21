@@ -51,7 +51,41 @@ struct TimestampMS final {
   }
 };
 
-struct ExecutorInstance {
+class ExecutorInstance;
+
+struct ExecutorThreadLocalPlaceholder {
+  mutex mut;
+  ExecutorInstance* ptr = nullptr;
+  ExecutorInstance& Instance() {
+    lock_guard<mutex> lock(mut);
+    if (!ptr) {
+      terminate();
+    }
+    return *ptr;
+  }
+  void Set(ExecutorInstance& ref) {
+    lock_guard<mutex> lock(mut);
+    if (ptr) {
+      terminate();
+    }
+    ptr = &ref;
+  }
+  void Unset(ExecutorInstance& ref) {
+    lock_guard<mutex> lock(mut);
+    if (ptr != &ref) {
+      terminate();
+    }
+    ptr = nullptr;
+  }
+};
+
+ExecutorThreadLocalPlaceholder& ExecutorForThisThread() {
+  static thread_local ExecutorThreadLocalPlaceholder p;
+  return p;
+}
+
+class ExecutorInstance {
+ private:
   thread worker;
   TimestampMS const t0;
 
@@ -62,12 +96,9 @@ struct ExecutorInstance {
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
   multimap<int, function<void()>> jobs;
 
+ protected:
+  friend class ExecutorScope;
   ExecutorInstance() : worker([this]() { Thread(); }) {
-  }
-
-  void Schedule(milliseconds delay, function<void()> code) {
-    lock_guard<mutex> lock(mut);
-    jobs.emplace((TimestampMS() - t0) + delay.count(), code);
   }
 
   function<void()> GetNextTask() {
@@ -93,6 +124,7 @@ struct ExecutorInstance {
   }
 
   void Thread() {
+    ExecutorForThisThread().Set(*this);
     auto& name = CurrentThreadName();
     string const goal = "ExecutorInstance";
     if (name == goal) {
@@ -106,6 +138,7 @@ struct ExecutorInstance {
       // `GetNextTask()` a) is the blocking call, and b) returns `nullptr` once signaled termination.
       function<void()> next_task = GetNextTask();
       if (!next_task) {
+        ExecutorForThisThread().Unset(*this);
         return;
       }
       next_task();
@@ -117,13 +150,62 @@ struct ExecutorInstance {
       lock_guard<mutex> lock(mut);
       done = true;
     }
+  }
+
+ public:
+  ~ExecutorInstance() {
     worker.join();
+  }
+  void Schedule(milliseconds delay, function<void()> code) {
+    lock_guard<mutex> lock(mut);
+    jobs.emplace((TimestampMS() - t0) + delay.count(), code);
+  }
+};
+
+class ExecutorScope {
+ private:
+  // The instance of the executor is created and owned by `ExecutorScope`.
+  ExecutorInstance executor;
+
+  // A quick & hacky way to wait until everything is done, at scope destruction.
+  mutex unlock_when_done;
+  atomic_bool tear_down_called = atomic_bool(false);
+  atomic_bool wait_till_tear_down_called = atomic_bool(false);
+
+ public:
+  ExecutorScope() {
+    unlock_when_done.lock();
+    ExecutorForThisThread().Set(executor);
+  }
+
+  ~ExecutorScope() {
+    if (!wait_till_tear_down_called) {
+      cout << "Should have called ExecutorScope::WaitTillTearedDown() before the end of scope." << endl;
+      terminate();
+    }
+  }
+
+  void TearDown() {
+    if (!tear_down_called) {
+      tear_down_called = true;
+      executor.GracefulShutdown();
+      unlock_when_done.unlock();
+    }
+  }
+
+  // NOTE(dkorolev): This function should be called before the destructor, to ensure proper cleanup.
+  void WaitTillTearedDown() {
+    // Will wait, potentially forever, for `TearDown` to be called for this `ExecutorScope`.
+    if (!wait_till_tear_down_called) {
+      unlock_when_done.lock();
+      ExecutorForThisThread().Unset(executor);
+      wait_till_tear_down_called = true;
+    }
   }
 };
 
 inline ExecutorInstance& Executor() {
-  static ExecutorInstance singleton_executor;
-  return singleton_executor;
+  return ExecutorForThisThread().Instance();
 }
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
@@ -189,12 +271,8 @@ struct FizzBuzzGenerator {
       ++value;
       // Need a shared instance so that it outlives both the called and either of the async calls.
       auto shared_async_caller_instance = make_shared<AsyncNextStepLogic>(this, cb, next);
-      IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) {
-        shared_async_caller_instance->SetD3(d3);
-      });
-      IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) {
-        shared_async_caller_instance->SetD5(d5);
-      });
+      IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) { shared_async_caller_instance->SetD3(d3); });
+      IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) { shared_async_caller_instance->SetD5(d5); });
     }
   }
 };
@@ -213,9 +291,9 @@ int main() {
   FizzBuzzGenerator g;
   int total = 0;
   auto t0 = TimestampMS();
-  // A quick & hacky way to wait until everything is done.
-  mutex unlocked_when_done;
-  unlocked_when_done.lock();
+
+  // Create an executor for the scope of `main()`.
+  ExecutorScope executor;
 
   function<void(string)> Print = [&total, &t0](string s) {
     auto t1 = TimestampMS();
@@ -227,12 +305,13 @@ int main() {
     if (total < 15) {
       g.Next(Print, KeepGoing);
     } else {
-      unlocked_when_done.unlock();
+      executor.TearDown();
     }
   };
   KeepGoing();
 
-  // NOTE(dkorolev): Now we must wait, otherwise the destroyed instance of `g` will be used from other threads.
-  unlocked_when_done.lock();
-  Executor().GracefulShutdown();
+  // Should call this, for proper destruction, not at the end-of-scope.
+  executor.WaitTillTearedDown();
+
+  cout << "Done." << endl;
 }
