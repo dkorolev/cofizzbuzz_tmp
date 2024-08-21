@@ -227,8 +227,11 @@ inline ExecutorInstance& Executor() {
   return ExecutorForThisThread().Instance();
 }
 
-struct ExecutorCoroutineScope {
+class ExecutorCoroutineScope {
+ private:
   CoroutineLifetime* coro;
+
+ public:
   ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) {
     Executor().Register(coro);
   }
