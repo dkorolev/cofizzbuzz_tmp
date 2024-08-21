@@ -13,9 +13,11 @@
 #include <map>
 #include <set>
 #include <coroutine>
+#include <vector>
 
 using std::cout;
 using std::endl;
+using std::flush;
 using std::function;
 using std::queue;
 using std::string;
@@ -338,12 +340,91 @@ struct Coroutine {
     }
 
     void unhandled_exception() noexcept {
+      terminate();
     }
 
     void ResumeFromExecutorWorkerThread() override {
       std::coroutine_handle<promise_type>::from_promise(*this).resume();
     }
   };
+};
+
+struct CoroutineBool {
+  struct promise_type : CoroutineLifetime {
+    unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
+    mutex mut;
+    bool returned = false;
+    bool value;
+    std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+
+    CoroutineBool get_return_object() {
+      if (coroutine_executor_lifetime) {
+        // Internal error, should only have one `get_return_object` call per instance.
+        terminate();
+      }
+      coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
+      return CoroutineBool(*this);
+    }
+
+    std::suspend_always initial_suspend() noexcept {
+      // Should be `.resume()`-d via `.ResumeFromExecutorWorkerThread()` from the executor.
+      return {};
+    }
+
+    std::suspend_never final_suspend() noexcept {
+      coroutine_executor_lifetime = nullptr;
+      return {};
+    }
+
+    void return_value(bool v) noexcept {
+      {
+        lock_guard<mutex> lock(mut);
+        if (returned) {
+          terminate();
+        }
+        returned = true;
+        value = v;
+      }
+      for (auto& h : to_resume) {
+        h.resume();
+      }
+    }
+
+    void unhandled_exception() noexcept {
+      terminate();
+    }
+
+    void ResumeFromExecutorWorkerThread() override {
+      std::coroutine_handle<promise_type>::from_promise(*this).resume();
+    }
+  };
+
+  promise_type& self;
+  explicit CoroutineBool(promise_type& self) : self(self) {
+  }
+
+  bool await_ready() noexcept {
+    lock_guard<mutex> lock(self.mut);
+    return self.returned;
+  }
+
+  void await_suspend(std::coroutine_handle<> h) noexcept {
+    lock_guard<mutex> lock(self.mut);
+    if (self.returned) {
+      h.resume();
+    } else {
+      self.to_resume.push_back(h);
+    }
+  }
+
+  bool await_resume() noexcept {
+    lock_guard<mutex> lock(self.mut);
+    if (!self.returned) {
+      // Internal error: `await_resume()` should only be called once the result is available.
+      terminate();
+    }
+    return self.value;
+  }
 };
 
 class Sleep final {
@@ -366,11 +447,26 @@ class Sleep final {
   }
 };
 
+inline CoroutineBool IsEven(int x) {
+  // Confirm multiple suspend/resume steps work just fine.
+  // Just `co_return ((x % 2) == 0);` works too, of course.
+  if ((x % 2) == 0) {
+    co_await Sleep(1ms);
+    co_await Sleep(1ms);
+    co_return true;
+  } else {
+    co_await Sleep(1ms);
+    co_await Sleep(1ms);
+    co_await Sleep(1ms);
+    co_return false;
+  }
+}
+
 void RunExampleCoroutine() {
   function<Coroutine(string)> MultiStepFunction = [](string s) -> Coroutine {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
-      cout << s << ", i=" << i << "/10." << endl;
+      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false") << "." << endl;
     }
   };
 
@@ -382,6 +478,8 @@ void RunExampleCoroutine() {
   }
 
   // The destructor of `ExecutorScope` will wait for the running coroutine(s) to complete.
+  // To be more precise, it will wait until it is shut down gracefully, and it will be shut down gracefully
+  // as soon as the last outstanding coroutine is done with its execution!
 }
 
 int main() {
