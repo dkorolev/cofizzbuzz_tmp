@@ -96,9 +96,13 @@ class ExecutorInstance {
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
   multimap<int, function<void()>> jobs;
 
+  // A quick & hacky way to wait until everything is done, at scope destruction.
+  mutex unlock_when_done;
+
  protected:
   friend class ExecutorScope;
   ExecutorInstance() : worker([this]() { Thread(); }) {
+    unlock_when_done.lock();
   }
 
   function<void()> GetNextTask() {
@@ -139,10 +143,17 @@ class ExecutorInstance {
       function<void()> next_task = GetNextTask();
       if (!next_task) {
         ExecutorForThisThread().Unset(*this);
+        unlock_when_done.unlock();
         return;
       }
       next_task();
     }
+  }
+
+ public:
+  ~ExecutorInstance() {
+    worker.join();
+    unlock_when_done.lock();
   }
 
   void GracefulShutdown() {
@@ -152,10 +163,6 @@ class ExecutorInstance {
     }
   }
 
- public:
-  ~ExecutorInstance() {
-    worker.join();
-  }
   void Schedule(milliseconds delay, function<void()> code) {
     lock_guard<mutex> lock(mut);
     jobs.emplace((TimestampMS() - t0) + delay.count(), code);
@@ -167,40 +174,13 @@ class ExecutorScope {
   // The instance of the executor is created and owned by `ExecutorScope`.
   ExecutorInstance executor;
 
-  // A quick & hacky way to wait until everything is done, at scope destruction.
-  mutex unlock_when_done;
-  atomic_bool tear_down_called = atomic_bool(false);
-  atomic_bool wait_till_tear_down_called = atomic_bool(false);
-
  public:
   ExecutorScope() {
-    unlock_when_done.lock();
     ExecutorForThisThread().Set(executor);
   }
 
   ~ExecutorScope() {
-    if (!wait_till_tear_down_called) {
-      cout << "Should have called ExecutorScope::WaitTillTearedDown() before the end of scope." << endl;
-      terminate();
-    }
-  }
-
-  void TearDown() {
-    if (!tear_down_called) {
-      tear_down_called = true;
-      executor.GracefulShutdown();
-      unlock_when_done.unlock();
-    }
-  }
-
-  // NOTE(dkorolev): This function should be called before the destructor, to ensure proper cleanup.
-  void WaitTillTearedDown() {
-    // Will wait, potentially forever, for `TearDown` to be called for this `ExecutorScope`.
-    if (!wait_till_tear_down_called) {
-      unlock_when_done.lock();
-      ExecutorForThisThread().Unset(executor);
-      wait_till_tear_down_called = true;
-    }
+    ExecutorForThisThread().Unset(executor);
   }
 };
 
@@ -277,6 +257,28 @@ struct FizzBuzzGenerator {
   }
 };
 
+FizzBuzzGenerator g;
+struct State {
+  int total = 0;
+  TimestampMS t0;
+};
+auto state = make_shared<State>();
+
+void Print(string s) {
+  auto t1 = TimestampMS();
+  cout << ++state->total << " : " << s << ", in " << (t1 - state->t0) << "ms, from thread " << CurrentThreadName()
+       << endl;
+  state->t0 = t1;
+};
+
+void KeepGoing() {
+  if (state->total < 15) {
+    g.Next(Print, KeepGoing);
+  } else {
+    Executor().GracefulShutdown();
+  }
+};
+
 int main() {
 #if defined(NDEBUG) && !defined(DEBUG)
   cout << "Running the NDEBUG build." << endl;
@@ -288,30 +290,10 @@ int main() {
 
   CurrentThreadName() = "main()";
 
-  FizzBuzzGenerator g;
-  int total = 0;
-  auto t0 = TimestampMS();
-
   // Create an executor for the scope of `main()`.
   ExecutorScope executor;
 
-  function<void(string)> Print = [&total, &t0](string s) {
-    auto t1 = TimestampMS();
-    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
-    t0 = t1;
-  };
-
-  function<void()> KeepGoing = [&]() {
-    if (total < 15) {
-      g.Next(Print, KeepGoing);
-    } else {
-      executor.TearDown();
-    }
-  };
   KeepGoing();
 
-  // Should call this, for proper destruction, not at the end-of-scope.
-  executor.WaitTillTearedDown();
-
-  cout << "Done." << endl;
+  cout << "main() done, but will wait for the executor to complete its tasks." << endl;
 }
