@@ -257,28 +257,6 @@ struct FizzBuzzGenerator {
   }
 };
 
-FizzBuzzGenerator g;
-struct State {
-  int total = 0;
-  TimestampMS t0;
-};
-auto state = make_shared<State>();
-
-void Print(string s) {
-  auto t1 = TimestampMS();
-  cout << ++state->total << " : " << s << ", in " << (t1 - state->t0) << "ms, from thread " << CurrentThreadName()
-       << endl;
-  state->t0 = t1;
-};
-
-void KeepGoing() {
-  if (state->total < 15) {
-    g.Next(Print, KeepGoing);
-  } else {
-    Executor().GracefulShutdown();
-  }
-};
-
 int main() {
 #if defined(NDEBUG) && !defined(DEBUG)
   cout << "Running the NDEBUG build." << endl;
@@ -290,7 +268,27 @@ int main() {
 
   CurrentThreadName() = "main()";
 
+  FizzBuzzGenerator g;
+  int total = 0;
+  auto t0 = TimestampMS();
+
+  function<void(string)> Print = [&total, &t0](string s) {
+    auto t1 = TimestampMS();
+    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
+    t0 = t1;
+  };
+
+  function<void()> KeepGoing = [&]() {
+    if (total < 15) {
+      g.Next(Print, KeepGoing);
+    } else {
+      Executor().GracefulShutdown();
+    }
+  };
+
   // Create an executor for the scope of `main()`.
+  // NOTE(dkorolev): Important that this line happens after `Print` and `KeepGoing` are declared!
+  // Since otherwise they will be destructed before the instance of the `executor`, welcome to the horrors of C++.
   ExecutorScope executor;
 
   KeepGoing();
