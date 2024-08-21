@@ -292,7 +292,7 @@ struct Coroutine {
     }
   };
 
-  explicit Coroutine(promise_type::handle_type coro, mutex& unlocked_when_coro_done)
+  explicit Coroutine(promise_type::handle_type coro, mutex& unlocked_when_coro_done) noexcept
       : coro(coro), unlocked_when_coro_done(unlocked_when_coro_done) {
     ExecutorForThisThread().FailIfNoExecutor();
     unlocked_when_coro_done.lock();
@@ -322,11 +322,11 @@ class Sleep final {
     return false;
   }
 
-  void await_suspend(std::coroutine_handle<> h) {
+  void await_suspend(std::coroutine_handle<> h) noexcept {
     Executor().Schedule(ms, [h]() { h.resume(); });
   }
 
-  void await_resume() {
+  void await_resume() noexcept {
   }
 };
 
