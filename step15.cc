@@ -1,4 +1,4 @@
-// Introducing the executor: the thread that runs all the async stuff.
+// Introduce template coro return type.
 
 #include <iostream>
 #include <string>
@@ -349,21 +349,22 @@ struct Coroutine {
   };
 };
 
-struct CoroutineBool {
+template <typename RETVAL>
+struct CoroutineReturning {
   struct promise_type : CoroutineLifetime {
     unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
     mutex mut;
     bool returned = false;
-    bool value;
+    RETVAL value;
     std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 
-    CoroutineBool get_return_object() {
+    CoroutineReturning get_return_object() {
       if (coroutine_executor_lifetime) {
         // Internal error, should only have one `get_return_object` call per instance.
         terminate();
       }
       coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
-      return CoroutineBool(*this);
+      return CoroutineReturning(*this);
     }
 
     std::suspend_always initial_suspend() noexcept {
@@ -376,7 +377,7 @@ struct CoroutineBool {
       return {};
     }
 
-    void return_value(bool v) noexcept {
+    void return_value(RETVAL v) noexcept {
       {
         lock_guard<mutex> lock(mut);
         if (returned) {
@@ -400,7 +401,7 @@ struct CoroutineBool {
   };
 
   promise_type& self;
-  explicit CoroutineBool(promise_type& self) : self(self) {
+  explicit CoroutineReturning(promise_type& self) : self(self) {
   }
 
   bool await_ready() noexcept {
@@ -417,7 +418,7 @@ struct CoroutineBool {
     }
   }
 
-  bool await_resume() noexcept {
+  RETVAL await_resume() noexcept {
     lock_guard<mutex> lock(self.mut);
     if (!self.returned) {
       // Internal error: `await_resume()` should only be called once the result is available.
@@ -447,7 +448,7 @@ class Sleep final {
   }
 };
 
-inline CoroutineBool IsEven(int x) {
+inline CoroutineReturning<bool> IsEven(int x) {
   // Confirm multiple suspend/resume steps work just fine.
   // Just `co_return ((x % 2) == 0);` works too, of course.
   if ((x % 2) == 0) {
@@ -462,11 +463,16 @@ inline CoroutineBool IsEven(int x) {
   }
 }
 
+inline CoroutineReturning<int> Square(int x) {
+  co_await Sleep(1ms);
+  co_return x * x;
+}
+
 void RunExampleCoroutine() {
   function<Coroutine(string)> MultiStepFunction = [](string s) -> Coroutine {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
-      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false") << "." << endl;
+      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false") << ", square=" << flush << co_await Square(i) << endl;
     }
   };
 
