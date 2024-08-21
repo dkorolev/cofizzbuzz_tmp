@@ -7,7 +7,6 @@
 #include <thread>
 #include <chrono>
 #include <future>
-#include <thread>
 #include <atomic>
 #include <mutex>
 #include <memory>
@@ -199,7 +198,6 @@ inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
 
 struct FizzBuzzGenerator {
   int value = 0;
-  bool done = false;
   queue<string> next_values;
   void InvokeCbThenNext(function<void(string)> cb, function<void()> next) {
     cb(next_values.front());
@@ -316,10 +314,7 @@ class Sleep final {
   }
 
   void await_suspend(std::coroutine_handle<> h) {
-    thread([ms = this->ms, h]() {
-      sleep_for(ms);
-      h.resume();
-    }).detach();
+    Executor().Schedule(ms, [h]() { h.resume(); });
   }
 
   void await_resume() {
@@ -334,8 +329,10 @@ void RunExampleCoroutine() {
     }
   };
 
+  ExecutorScope executor;
   ResumeOnceTask task = MultiStepFunction("The MultiStepFunction");
   task.RunToCompletion();
+  Executor().GracefulShutdown();
 }
 
 int main() {
