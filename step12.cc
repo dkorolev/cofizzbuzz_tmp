@@ -12,6 +12,7 @@
 #include <mutex>
 #include <memory>
 #include <map>
+#include <coroutine>
 
 using std::cout;
 using std::endl;
@@ -257,6 +258,86 @@ struct FizzBuzzGenerator {
   }
 };
 
+// The "minimalistic" coroutine runner.
+// It does `.resume()` once, and then waits until `final_suspend` was invoked on its `promise_type`.
+struct ResumeOnceTask {
+  struct promise_type {
+    mutex unlocked_when_coro_done;
+
+    using handle_type = std::coroutine_handle<promise_type>;
+
+    ResumeOnceTask get_return_object() {
+      return ResumeOnceTask(handle_type::from_promise(*this), unlocked_when_coro_done);
+    }
+
+    std::suspend_always initial_suspend() noexcept {
+      return {};
+    }
+
+    std::suspend_never final_suspend() noexcept {
+      unlocked_when_coro_done.unlock();
+      return {};
+    }
+
+    void return_void() noexcept {
+    }
+
+    void unhandled_exception() noexcept {
+    }
+  };
+
+  explicit ResumeOnceTask(promise_type::handle_type coro, mutex& unlocked_when_coro_done)
+      : coro(coro), unlocked_when_coro_done(unlocked_when_coro_done) {
+    unlocked_when_coro_done.lock();
+  }
+
+  void RunToCompletion() noexcept {
+    // Resume once.
+    coro.resume();
+    // Wait until the coroutine completes.
+    unlocked_when_coro_done.lock();
+  }
+
+ private:
+  promise_type::handle_type coro;
+  mutex& unlocked_when_coro_done;
+};
+
+class Sleep final {
+ private:
+  milliseconds const ms;
+
+ public:
+  explicit Sleep(milliseconds ms) : ms(ms) {
+  }
+
+  constexpr bool await_ready() noexcept {
+    return false;
+  }
+
+  void await_suspend(std::coroutine_handle<> h) {
+    thread([ms = this->ms, h]() {
+      sleep_for(ms);
+      h.resume();
+    }).detach();
+  }
+
+  void await_resume() {
+  }
+};
+
+void RunExampleCoroutine() {
+  function<ResumeOnceTask(string)> MultiStepFunction = [](string s) -> ResumeOnceTask {
+    for (int i = 1; i <= 10; ++i) {
+      co_await Sleep(100ms);
+      cout << s << ", i=" << i << "/10." << endl;
+    }
+  };
+
+  ResumeOnceTask task = MultiStepFunction("The MultiStepFunction");
+  task.RunToCompletion();
+}
+
 int main() {
 #if defined(NDEBUG) && !defined(DEBUG)
   cout << "Running the NDEBUG build." << endl;
@@ -267,6 +348,9 @@ int main() {
 #endif
 
   CurrentThreadName() = "main()";
+
+  RunExampleCoroutine();
+  return 0;
 
   FizzBuzzGenerator g;
   int total = 0;
@@ -291,6 +375,8 @@ int main() {
   // Since otherwise they will be destructed before the instance of the `executor`, welcome to the horrors of C++.
   ExecutorScope executor;
 
+  // Kick off the run.
+  // It will initiate the series of "call back-s", via the executor, from its thread.
   KeepGoing();
 
   cout << "main() done, but will wait for the executor to complete its tasks." << endl;
