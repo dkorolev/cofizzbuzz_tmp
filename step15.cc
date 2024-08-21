@@ -472,7 +472,8 @@ void RunExampleCoroutine() {
   function<Coroutine(string)> MultiStepFunction = [](string s) -> Coroutine {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
-      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false") << ", square=" << flush << co_await Square(i) << endl;
+      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false")
+           << ", square=" << flush << co_await Square(i) << endl;
     }
   };
 

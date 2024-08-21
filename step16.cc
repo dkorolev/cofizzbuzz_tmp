@@ -1,4 +1,4 @@
-// Introduce template coro return type.
+// Extended the template coro return type to <void> too.
 
 #include <iostream>
 #include <string>
@@ -313,109 +313,51 @@ struct FizzBuzzGenerator {
 // The "minimalistic" coroutine runner integrated with the executor.
 // Instructs the executor to call `.resume()` once.
 // Tracks its own lifetime with the executor, so that the executor knows when all the active coroutines are done.
-struct Coroutine {
-  struct promise_type : CoroutineLifetime {
-    unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
 
-    Coroutine get_return_object() {
-      if (coroutine_executor_lifetime) {
-        // Internal error, should only have one `get_return_object` call per instance.
-        terminate();
-      }
-      coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
-      return Coroutine();
-    }
-
-    std::suspend_always initial_suspend() noexcept {
-      // Should be `.resume()`-d via `.ResumeFromExecutorWorkerThread()` from the executor.
-      return {};
-    }
-
-    std::suspend_never final_suspend() noexcept {
-      coroutine_executor_lifetime = nullptr;
-      return {};
-    }
-
-    void return_void() noexcept {
-    }
-
-    void unhandled_exception() noexcept {
-      terminate();
-    }
-
-    void ResumeFromExecutorWorkerThread() override {
-      std::coroutine_handle<promise_type>::from_promise(*this).resume();
-    }
-  };
+struct CoroutineRetvalHolderBase {
+  mutable mutex mut;
+  bool returned = false;
+  std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 };
 
 template <typename RETVAL>
-struct CoroutineReturning {
-  struct promise_type : CoroutineLifetime {
-    unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
-    mutex mut;
-    bool returned = false;
-    RETVAL value;
-    std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
-
-    CoroutineReturning get_return_object() {
-      if (coroutine_executor_lifetime) {
-        // Internal error, should only have one `get_return_object` call per instance.
+struct CoroutineRetvalHolder : CoroutineRetvalHolderBase {
+  RETVAL value;
+  void return_value(RETVAL v) noexcept {
+    {
+      lock_guard<mutex> lock(mut);
+      if (returned) {
         terminate();
       }
-      coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
-      return CoroutineReturning(*this);
+      returned = true;
+      value = v;
     }
-
-    std::suspend_always initial_suspend() noexcept {
-      // Should be `.resume()`-d via `.ResumeFromExecutorWorkerThread()` from the executor.
-      return {};
-    }
-
-    std::suspend_never final_suspend() noexcept {
-      coroutine_executor_lifetime = nullptr;
-      return {};
-    }
-
-    void return_value(RETVAL v) noexcept {
-      {
-        lock_guard<mutex> lock(mut);
-        if (returned) {
-          terminate();
-        }
-        returned = true;
-        value = v;
-      }
-      for (auto& h : to_resume) {
-        h.resume();
-      }
-    }
-
-    void unhandled_exception() noexcept {
-      terminate();
-    }
-
-    void ResumeFromExecutorWorkerThread() override {
-      std::coroutine_handle<promise_type>::from_promise(*this).resume();
-    }
-  };
-
-  promise_type& self;
-  explicit CoroutineReturning(promise_type& self) : self(self) {
-  }
-
-  bool await_ready() noexcept {
-    lock_guard<mutex> lock(self.mut);
-    return self.returned;
-  }
-
-  void await_suspend(std::coroutine_handle<> h) noexcept {
-    lock_guard<mutex> lock(self.mut);
-    if (self.returned) {
+    for (auto& h : to_resume) {
       h.resume();
-    } else {
-      self.to_resume.push_back(h);
     }
+  }
+};
+
+template <>
+struct CoroutineRetvalHolder<void> : CoroutineRetvalHolderBase {
+  void return_void() noexcept {
+    {
+      lock_guard<mutex> lock(mut);
+      if (returned) {
+        terminate();
+      }
+      returned = true;
+    }
+    for (auto& h : to_resume) {
+      h.resume();
+    }
+  }
+};
+
+template <typename RETVAL>
+struct CoroutineAwaitResume {
+  CoroutineRetvalHolder<RETVAL>& self;
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : self(self) {
   }
 
   RETVAL await_resume() noexcept {
@@ -425,6 +367,73 @@ struct CoroutineReturning {
       terminate();
     }
     return self.value;
+  }
+};
+
+template <>
+struct CoroutineAwaitResume<void> {
+  CoroutineRetvalHolder<void>& self;
+
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : self(self) {
+  }
+
+  void await_resume() noexcept {
+    lock_guard<mutex> lock(self.mut);
+    if (!self.returned) {
+      // Internal error: `await_resume()` should only be called once the result is available.
+      terminate();
+    }
+  }
+};
+
+template <typename RETVAL = void>
+struct Coro : CoroutineAwaitResume<RETVAL> {
+  struct promise_type : CoroutineLifetime, CoroutineRetvalHolder<RETVAL> {
+    unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
+
+    Coro get_return_object() {
+      if (coroutine_executor_lifetime) {
+        // Internal error, should only have one `get_return_object` call per instance.
+        terminate();
+      }
+      coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
+      return Coro(*this);
+    }
+
+    std::suspend_always initial_suspend() noexcept {
+      // Should be `.resume()`-d via `.ResumeFromExecutorWorkerThread()` from the executor.
+      return {};
+    }
+
+    std::suspend_never final_suspend() noexcept {
+      coroutine_executor_lifetime = nullptr;
+      return {};
+    }
+
+    void unhandled_exception() noexcept {
+      terminate();
+    }
+
+    void ResumeFromExecutorWorkerThread() override {
+      std::coroutine_handle<promise_type>::from_promise(*this).resume();
+    }
+  };
+
+  explicit Coro(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
+  }
+
+  bool await_ready() noexcept {
+    lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::self.mut);
+    return CoroutineAwaitResume<RETVAL>::self.returned;
+  }
+
+  void await_suspend(std::coroutine_handle<> h) noexcept {
+    lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::self.mut);
+    if (CoroutineAwaitResume<RETVAL>::self.returned) {
+      h.resume();
+    } else {
+      CoroutineAwaitResume<RETVAL>::self.to_resume.push_back(h);
+    }
   }
 };
 
@@ -448,7 +457,7 @@ class Sleep final {
   }
 };
 
-inline CoroutineReturning<bool> IsEven(int x) {
+inline Coro<bool> IsEven(int x) {
   // Confirm multiple suspend/resume steps work just fine.
   // Just `co_return ((x % 2) == 0);` works too, of course.
   if ((x % 2) == 0) {
@@ -463,23 +472,29 @@ inline CoroutineReturning<bool> IsEven(int x) {
   }
 }
 
-inline CoroutineReturning<int> Square(int x) {
-  co_await Sleep(1ms);
-  co_return x * x;
+inline Coro<void> CallSleep(milliseconds ms) {
+  co_await Sleep(ms);
+  co_return;
+}
+
+inline Coro<int> Square(int x) {
+  co_await CallSleep(1ms);
+  co_return x* x;
 }
 
 void RunExampleCoroutine() {
-  function<Coroutine(string)> MultiStepFunction = [](string s) -> Coroutine {
+  function<Coro<>(string)> MultiStepFunction = [](string s) -> Coro<> {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
-      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false") << ", square=" << flush << co_await Square(i) << endl;
+      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false")
+           << ", square=" << flush << co_await Square(i) << endl;
     }
   };
 
   ExecutorScope executor;
 
   {
-    // Call the coroutine. The return object, of type `Coroutine`, will go out of scope, which is normal.
+    // Call the coroutine. The return object, of type `Coro<void>`, will go out of scope, which is normal.
     MultiStepFunction("The MultiStepFunction");
   }
 
