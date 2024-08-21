@@ -1,4 +1,4 @@
-// Extended the template coro return type to <void> too.
+// Debug logging of counters.
 
 #include <iostream>
 #include <string>
@@ -104,9 +104,11 @@ struct CoroutineLifetime {
 class ExecutorInstance {
  private:
   thread worker;
+  int64_t worker_total_steps = 0;
+  bool debug_counters = false;
   TimestampMS const t0;
 
-  bool done = false;
+  bool executor_time_to_terminate_thread = false;
 
   mutex mut;
 
@@ -131,7 +133,7 @@ class ExecutorInstance {
     while (true) {
       {
         lock_guard<mutex> lock(mut);
-        if (done) {
+        if (executor_time_to_terminate_thread) {
           return nullptr;
         }
         if (!jobs.empty()) {
@@ -169,6 +171,7 @@ class ExecutorInstance {
         return;
       }
       next_task();
+      ++worker_total_steps;
     }
   }
 
@@ -187,26 +190,27 @@ class ExecutorInstance {
     }
     coroutines.erase(it);
     if (coroutines.empty()) {
-      GracefulShutdown();
+      lock_guard<mutex> lock(mut);
+      executor_time_to_terminate_thread = true;
     }
   }
 
  public:
   ~ExecutorInstance() {
     worker.join();
-    unlock_when_done.lock();
-  }
-
-  void GracefulShutdown() {
-    {
-      lock_guard<mutex> lock(mut);
-      done = true;
+    if (debug_counters) {
+      cout << "Executor worker total steps: " << worker_total_steps << endl;
     }
+    unlock_when_done.lock();
   }
 
   void Schedule(milliseconds delay, function<void()> code) {
     lock_guard<mutex> lock(mut);
     jobs.emplace((TimestampMS() - t0) + delay.count(), code);
+  }
+
+  void EnableDebugLoggingAtDestruction() {
+    debug_counters = true;
   }
 };
 
@@ -441,7 +445,9 @@ inline Coro<bool> IsDivisibleByThree(int value) {
 }
 
 inline Coro<bool> IsDivisibleByFive(int value) {
-  co_await Sleep(10ms);
+  // Demo/test: going from one sleep of 10ms to two sleeps of 5ms each bumps worker steps count from 76 to 91.
+  co_await Sleep(5ms);
+  co_await Sleep(5ms);
   co_return (value % 5) == 0;
 }
 
@@ -485,6 +491,8 @@ void RunCoroFizzBuzz() {
   });
 
   cout << "main() done, but will wait for the executor to complete its tasks." << endl;
+
+  Executor().EnableDebugLoggingAtDestruction();
 }
 
 int main(int argc, char** argv) {
