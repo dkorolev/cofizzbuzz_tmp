@@ -54,7 +54,7 @@ struct TimestampMS final {
 class ExecutorInstance;
 
 struct ExecutorThreadLocalPlaceholder {
-  mutex mut;
+  mutable mutex mut;
   ExecutorInstance* ptr = nullptr;
   ExecutorInstance& Instance() {
     lock_guard<mutex> lock(mut);
@@ -76,6 +76,13 @@ struct ExecutorThreadLocalPlaceholder {
       terminate();
     }
     ptr = nullptr;
+  }
+  void FailIfNoExecutor() const {
+    lock_guard<mutex> lock(mut);
+    if (!ptr) {
+      cout << "No executor, have one in scope before starting the coroutine." << endl;
+      terminate();
+    }
   }
 };
 
@@ -274,6 +281,7 @@ struct ResumeOnceTask {
 
     std::suspend_never final_suspend() noexcept {
       unlocked_when_coro_done.unlock();
+      Executor().GracefulShutdown();
       return {};
     }
 
@@ -286,6 +294,7 @@ struct ResumeOnceTask {
 
   explicit ResumeOnceTask(promise_type::handle_type coro, mutex& unlocked_when_coro_done)
       : coro(coro), unlocked_when_coro_done(unlocked_when_coro_done) {
+    ExecutorForThisThread().FailIfNoExecutor();
     unlocked_when_coro_done.lock();
   }
 
@@ -332,7 +341,6 @@ void RunExampleCoroutine() {
   ExecutorScope executor;
   ResumeOnceTask task = MultiStepFunction("The MultiStepFunction");
   task.RunToCompletion();
-  Executor().GracefulShutdown();
 }
 
 int main() {
