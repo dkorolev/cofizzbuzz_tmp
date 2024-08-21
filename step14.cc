@@ -11,6 +11,7 @@
 #include <mutex>
 #include <memory>
 #include <map>
+#include <set>
 #include <coroutine>
 
 using std::cout;
@@ -29,9 +30,11 @@ using std::make_unique;
 using std::multimap;
 using std::mutex;
 using std::promise;
+using std::set;
 using std::shared_ptr;
 using std::terminate;
 using std::thread;
+using std::unique_ptr;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -91,6 +94,11 @@ ExecutorThreadLocalPlaceholder& ExecutorForThisThread() {
   return p;
 }
 
+struct CoroutineLifetime {
+  virtual ~CoroutineLifetime() = default;
+  virtual void ResumeFromExecutorWorkerThread() = 0;
+};
+
 class ExecutorInstance {
  private:
   thread worker;
@@ -105,6 +113,11 @@ class ExecutorInstance {
 
   // A quick & hacky way to wait until everything is done, at scope destruction.
   mutex unlock_when_done;
+
+  // The coroutines still running.
+  // Will declare termination once the last one is done -- UNLESS CONFIGURED OTHERWISE!
+  // NOTE(dkorolev): Even a plain counter would do. But this example is extra safe and extra illustative.
+  set<CoroutineLifetime*> coroutines;
 
  protected:
   friend class ExecutorScope;
@@ -157,6 +170,25 @@ class ExecutorInstance {
     }
   }
 
+  friend class ExecutorCoroutineScope;
+  void Register(CoroutineLifetime* coro) {
+    Schedule(0ms, [coro]() { coro->ResumeFromExecutorWorkerThread(); });
+    if (coroutines.count(coro)) {
+      terminate();
+    }
+    coroutines.insert(coro);
+  }
+  void Unregister(CoroutineLifetime* coro) {
+    auto it = coroutines.find(coro);
+    if (it == coroutines.end()) {
+      terminate();
+    }
+    coroutines.erase(it);
+    if (coroutines.empty()) {
+      GracefulShutdown();
+    }
+  }
+
  public:
   ~ExecutorInstance() {
     worker.join();
@@ -194,6 +226,16 @@ class ExecutorScope {
 inline ExecutorInstance& Executor() {
   return ExecutorForThisThread().Instance();
 }
+
+struct ExecutorCoroutineScope {
+  CoroutineLifetime* coro;
+  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) {
+    Executor().Register(coro);
+  }
+  ~ExecutorCoroutineScope() {
+    Executor().Unregister(coro);
+  }
+};
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   Executor().Schedule(10ms, [=]() { cb((value % 3) == 0); });
@@ -263,25 +305,29 @@ struct FizzBuzzGenerator {
   }
 };
 
-// The "minimalistic" coroutine runner.
-// It does `.resume()` once, and then waits until `final_suspend` was invoked on its `promise_type`.
+// The "minimalistic" coroutine runner integrated with the executor.
+// Instructs the executor to call `.resume()` once.
+// Tracks its own lifetime with the executor, so that the executor knows when all the active coroutines are done.
 struct Coroutine {
-  struct promise_type {
-    mutex unlocked_when_coro_done;
-
-    using handle_type = std::coroutine_handle<promise_type>;
+  struct promise_type : CoroutineLifetime {
+    unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
 
     Coroutine get_return_object() {
-      return Coroutine(handle_type::from_promise(*this), unlocked_when_coro_done);
+      if (coroutine_executor_lifetime) {
+        // Internal error, should only have one `get_return_object` call per instance.
+        terminate();
+      }
+      coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
+      return Coroutine();
     }
 
     std::suspend_always initial_suspend() noexcept {
+      // Should be `.resume()`-d via `.ResumeFromExecutorWorkerThread()` from the executor.
       return {};
     }
 
     std::suspend_never final_suspend() noexcept {
-      unlocked_when_coro_done.unlock();
-      Executor().GracefulShutdown();
+      coroutine_executor_lifetime = nullptr;
       return {};
     }
 
@@ -290,24 +336,11 @@ struct Coroutine {
 
     void unhandled_exception() noexcept {
     }
+
+    void ResumeFromExecutorWorkerThread() override {
+      std::coroutine_handle<promise_type>::from_promise(*this).resume();
+    }
   };
-
-  explicit Coroutine(promise_type::handle_type coro, mutex& unlocked_when_coro_done) noexcept
-      : coro(coro), unlocked_when_coro_done(unlocked_when_coro_done) {
-    ExecutorForThisThread().FailIfNoExecutor();
-    unlocked_when_coro_done.lock();
-  }
-
-  void RunToCompletion() noexcept {
-    // Resume once.
-    coro.resume();
-    // Wait until the coroutine completes.
-    unlocked_when_coro_done.lock();
-  }
-
- private:
-  promise_type::handle_type coro;
-  mutex& unlocked_when_coro_done;
 };
 
 class Sleep final {
@@ -339,8 +372,13 @@ void RunExampleCoroutine() {
   };
 
   ExecutorScope executor;
-  Coroutine coro = MultiStepFunction("The MultiStepFunction");
-  coro.RunToCompletion();
+
+  {
+    // Call the coroutine. The return object, of type `Coroutine`, will go out of scope, which is normal.
+    MultiStepFunction("The MultiStepFunction");
+  }
+
+  // The destructor of `ExecutorScope` will wait for the running coroutine(s) to complete.
 }
 
 int main() {
