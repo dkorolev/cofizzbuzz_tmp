@@ -1,4 +1,4 @@
-// Debug logging of counters.
+// Debug logging of counters always in DEBUG mode.
 
 #include <iostream>
 #include <string>
@@ -14,6 +14,10 @@
 #include <set>
 #include <coroutine>
 #include <vector>
+
+#ifdef DEBUG
+#define TELEMETRY
+#endif
 
 using std::cout;
 using std::endl;
@@ -104,8 +108,9 @@ struct CoroutineLifetime {
 class ExecutorInstance {
  private:
   thread worker;
+#ifdef TELEMETRY
   int64_t worker_total_steps = 0;
-  bool debug_counters = false;
+#endif
   TimestampMS const t0;
 
   bool executor_time_to_terminate_thread = false;
@@ -171,7 +176,9 @@ class ExecutorInstance {
         return;
       }
       next_task();
+#ifdef TELEMETRY
       ++worker_total_steps;
+#endif
     }
   }
 
@@ -198,19 +205,15 @@ class ExecutorInstance {
  public:
   ~ExecutorInstance() {
     worker.join();
-    if (debug_counters) {
-      cout << "Executor worker total steps: " << worker_total_steps << endl;
-    }
+#ifdef TELEMETRY
+    cout << "Executor worker total steps: " << worker_total_steps << endl;
+#endif
     unlock_when_done.lock();
   }
 
   void Schedule(milliseconds delay, function<void()> code) {
     lock_guard<mutex> lock(mut);
     jobs.emplace((TimestampMS() - t0) + delay.count(), code);
-  }
-
-  void EnableDebugLoggingAtDestruction() {
-    debug_counters = true;
   }
 };
 
@@ -323,17 +326,17 @@ struct CoroutineAwaitResume<void> {
 };
 
 template <typename RETVAL = void>
-struct Coro : CoroutineAwaitResume<RETVAL> {
+struct Async : CoroutineAwaitResume<RETVAL> {
   struct promise_type : CoroutineLifetime, CoroutineRetvalHolder<RETVAL> {
     unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
 
-    Coro get_return_object() {
+    Async get_return_object() {
       if (coroutine_executor_lifetime) {
         // Internal error, should only have one `get_return_object` call per instance.
         terminate();
       }
       coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
-      return Coro(*this);
+      return Async(*this);
     }
 
     std::suspend_always initial_suspend() noexcept {
@@ -355,7 +358,7 @@ struct Coro : CoroutineAwaitResume<RETVAL> {
     }
   };
 
-  explicit Coro(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
+  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
   }
 
   bool await_ready() noexcept {
@@ -393,7 +396,7 @@ class Sleep final {
   }
 };
 
-inline Coro<bool> IsEven(int x) {
+inline Async<bool> IsEven(int x) {
   // Confirm multiple suspend/resume steps work just fine.
   // Just `co_return ((x % 2) == 0);` works too, of course.
   if ((x % 2) == 0) {
@@ -408,18 +411,18 @@ inline Coro<bool> IsEven(int x) {
   }
 }
 
-inline Coro<void> CallSleep(milliseconds ms) {
+inline Async<void> CallSleep(milliseconds ms) {
   co_await Sleep(ms);
   co_return;
 }
 
-inline Coro<int> Square(int x) {
+inline Async<int> Square(int x) {
   co_await CallSleep(1ms);
   co_return (x * x);
 }
 
 void RunExampleCoroutine() {
-  function<Coro<>(string)> MultiStepFunction = [](string s) -> Coro<> {
+  function<Async<>(string)> MultiStepFunction = [](string s) -> Async<> {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
       cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false")
@@ -430,7 +433,7 @@ void RunExampleCoroutine() {
   ExecutorScope executor;
 
   {
-    // Call the coroutine. The return object, of type `Coro<void>`, will go out of scope, which is normal.
+    // Call the coroutine. The return object, of type `Async<void>`, will go out of scope, which is normal.
     MultiStepFunction("The MultiStepFunction");
   }
 
@@ -439,24 +442,24 @@ void RunExampleCoroutine() {
   // as soon as the last outstanding coroutine is done with its execution!
 }
 
-inline Coro<bool> IsDivisibleByThree(int value) {
+inline Async<bool> IsDivisibleByThree(int value) {
   co_await Sleep(10ms);
   co_return (value % 3) == 0;
 }
 
-inline Coro<bool> IsDivisibleByFive(int value) {
+inline Async<bool> IsDivisibleByFive(int value) {
   // Demo/test: going from one sleep of 10ms to two sleeps of 5ms each bumps worker steps count from 76 to 91.
   co_await Sleep(5ms);
   co_await Sleep(5ms);
   co_return (value % 5) == 0;
 }
 
-inline Coro<> CoroFizzBuzz(function<Coro<bool>(string)> next) {
+inline Async<> CoroFizzBuzz(function<Async<bool>(string)> next) {
   int value = 0;
   while (true) {
     ++value;
-    Coro<bool> awaitable_d3 = IsDivisibleByThree(value);
-    Coro<bool> awaitable_d5 = IsDivisibleByFive(value);
+    Async<bool> awaitable_d3 = IsDivisibleByThree(value);
+    Async<bool> awaitable_d5 = IsDivisibleByFive(value);
     bool const d3 = co_await awaitable_d3;
     bool const d5 = co_await awaitable_d5;
     if (d3) {
@@ -483,7 +486,7 @@ void RunCoroFizzBuzz() {
 
   ExecutorScope executor;
 
-  CoroFizzBuzz([&total, &t0](string s) -> Coro<bool> {
+  CoroFizzBuzz([&total, &t0](string s) -> Async<bool> {
     auto t1 = TimestampMS();
     cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
     t0 = t1;
@@ -491,8 +494,6 @@ void RunCoroFizzBuzz() {
   });
 
   cout << "main() done, but will wait for the executor to complete its tasks." << endl;
-
-  Executor().EnableDebugLoggingAtDestruction();
 }
 
 int main(int argc, char** argv) {
