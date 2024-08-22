@@ -295,30 +295,30 @@ struct CoroutineRetvalHolder<void> : CoroutineRetvalHolderBase {
 
 template <typename RETVAL>
 struct CoroutineAwaitResume {
-  CoroutineRetvalHolder<RETVAL>& self;
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : self(self) {
+  CoroutineRetvalHolder<RETVAL>* pself;
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : pself(&self) {
   }
 
   RETVAL await_resume() noexcept {
-    lock_guard<mutex> lock(self.mut);
-    if (!self.returned) {
+    lock_guard<mutex> lock(pself->mut);
+    if (!pself->returned) {
       // Internal error: `await_resume()` should only be called once the result is available.
       terminate();
     }
-    return self.value;
+    return pself->value;
   }
 };
 
 template <>
 struct CoroutineAwaitResume<void> {
-  CoroutineRetvalHolder<void>& self;
+  CoroutineRetvalHolder<void>* pself;
 
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : self(self) {
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : pself(&self) {
   }
 
   void await_resume() noexcept {
-    lock_guard<mutex> lock(self.mut);
-    if (!self.returned) {
+    lock_guard<mutex> lock(pself->mut);
+    if (!pself->returned) {
       // Internal error: `await_resume()` should only be called once the result is available.
       terminate();
     }
@@ -328,6 +328,8 @@ struct CoroutineAwaitResume<void> {
 template <typename RETVAL = void>
 struct Async : CoroutineAwaitResume<RETVAL> {
   struct promise_type : CoroutineLifetime, CoroutineRetvalHolder<RETVAL> {
+    struct ConstructAsync {};
+
     unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
 
     Async get_return_object() {
@@ -336,7 +338,7 @@ struct Async : CoroutineAwaitResume<RETVAL> {
         terminate();
       }
       coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
-      return Async(*this);
+      return Async(ConstructAsync(), *this);
     }
 
     std::suspend_always initial_suspend() noexcept {
@@ -358,20 +360,29 @@ struct Async : CoroutineAwaitResume<RETVAL> {
     }
   };
 
-  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
+  explicit Async(promise_type::ConstructAsync, promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
   }
 
   bool await_ready() noexcept {
-    lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::self.mut);
-    return CoroutineAwaitResume<RETVAL>::self.returned;
+    if (CoroutineAwaitResume<RETVAL>::pself) {
+      lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::pself->mut);
+      return CoroutineAwaitResume<RETVAL>::pself->returned;
+    } else {
+      return true;
+    }
   }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
-    lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::self.mut);
-    if (CoroutineAwaitResume<RETVAL>::self.returned) {
-      h.resume();
+    if (CoroutineAwaitResume<RETVAL>::pself) {
+      lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::pself->mut);
+      if (CoroutineAwaitResume<RETVAL>::pself->returned) {
+        h.resume();
+      } else {
+        CoroutineAwaitResume<RETVAL>::pself->to_resume.push_back(h);
+      }
     } else {
-      CoroutineAwaitResume<RETVAL>::self.to_resume.push_back(h);
+      // Should not have `await_suspend()` called on an immediate value.
+      terminate();
     }
   }
 };
@@ -458,6 +469,7 @@ inline Async<> CoroFizzBuzz(function<Async<bool>(string)> next) {
   int value = 0;
   while (true) {
     ++value;
+    // Async<bool> awaitable_d3 = ((value % 3) == 0);  // IsDivisibleByThree(value);
     Async<bool> awaitable_d3 = IsDivisibleByThree(value);
     Async<bool> awaitable_d5 = IsDivisibleByFive(value);
     bool const d3 = co_await awaitable_d3;
