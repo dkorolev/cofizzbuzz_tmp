@@ -1,4 +1,4 @@
-// Macros to track what's going on behind the scenes live.
+// Catching Ctrl+\ (SIGQUIT) and printing coroutines executor state.
 
 #include <condition_variable>
 #include <iostream>
@@ -15,15 +15,16 @@
 #include <set>
 #include <coroutine>
 #include <vector>
+#include <utility>
+#include <csignal>
 
 #ifdef DEBUG
 #define TELEMETRY
-#define PRINT_SIMULATED_TIME
-#else
-// Slow down the "original" pace 10x.
-// So that `./.release/binary --example` can be interrupted with `Ctrl+\` for fun and profit.
-#define SLEEP_PER_SIMULATED_TIME_UNIT 10ms  // Sleeping for 10ms per simulated time unit.
+#undef PRINT_SIMULATED_TIME
 #endif
+
+// Slow down the "original" pace 10x.
+#define SLEEP_PER_SIMULATED_TIME_UNIT 10ms  // Sleeping for 10ms per simulated time unit.
 
 using std::atomic_bool;
 using std::atomic_int;
@@ -50,28 +51,24 @@ using std::to_string;
 using std::unique_lock;
 using std::unique_ptr;
 using namespace std::chrono_literals;
+using std::pair;
 using std::this_thread::sleep_for;
 
-// AWAIT: Note what exactly is being awaited on.
-#define AWAIT(x) (Executor().CurrentCoroutune().MarkAsAwaiting(__FILE__, __LINE__, #x), co_await x)
+// AWAIT: Note what exactly this corouting is awaiting on.
+#define AWAIT(x) (Executor().CurrentCoroutine().MarkAsAwaiting(__FILE__, __LINE__, #x), co_await x)
 
-// RETURN: Unneeded, just to keep the style the same.
+// RETURN: Unneeded, just to keep the style consistent.
 #define RETURN(...) co_return __VA_ARGS__
 
-// FN: Declare an async function that tells notes itself as the one being called.
-#define FN(name, retval, ...)                         \
-  inline Async<retval> name##_impl(__VA_ARGS__);      \
-  template <typename... ARGS>                         \
-  Async<retval> name(ARGS&&... args) {                \
-    ExecutorInCallScope _(#name, __FILE__, __LINE__); \
-    return name##_impl(std::forward<ARGS>(args)...);  \
-  }                                                   \
+// FN: Declare an async function that marks itself as the one that's executing.
+#define FN(name, retval, ...)                                         \
+  inline Async<retval> name##_impl(__VA_ARGS__);                      \
+  template <typename... ARGS>                                         \
+  Async<retval> name(ARGS&&... args) {                                \
+    Executor().AnnotateNextRegisterCallAs(#name, __FILE__, __LINE__); \
+    return name##_impl(std::forward<ARGS>(args)...);                  \
+  }                                                                   \
   inline Async<retval> name##_impl(__VA_ARGS__)
-
-struct ExecutorInCallScope {
-  ExecutorInCallScope(string, string, int) {
-  }
-};
 
 struct ThreadSafeCoutSection {
   lock_guard<mutex> lock;
@@ -152,7 +149,26 @@ ExecutorThreadLocalPlaceholder& ExecutorForThisThread() {
 struct CoroutineLifetime {
   virtual ~CoroutineLifetime() = default;
   virtual void ResumeFromExecutorWorkerThread() = 0;
+
+  std::string name = "<unnamed>";
+  std::string status = "starting";
+
+  void MarkAsAwaiting(string file, int line, string expression) {
+    status = "awaiting on " + expression + " @ " + file + ':' + to_string(line);
+  }
+
+  void MarkAsNotAwaiting() {
+    status = "running";
+  }
 };
+
+struct CoroutineLifetimeSleeper : CoroutineLifetime {
+  void ResumeFromExecutorWorkerThread() override {
+    terminate();  // Never called, this `sleeper` is just to act as the key in the telemetry map.
+  }
+};
+
+static CoroutineLifetimeSleeper global_sleeper;
 
 #ifdef TELEMETRY
 struct ExecutorStats {
@@ -201,12 +217,41 @@ TimeUnits operator"" _tu(unsigned long long v) {
   return TimeUnits{v};
 }
 
-struct ExecutorCurrentCoroutineInstance {
-  void MarkAsAwaiting(string, int, string) {
+struct HasDumpEverythingOnSIGQUIT {
+  virtual ~HasDumpEverythingOnSIGQUIT() = default;
+  virtual void DumpEverythingOnSIGQUIT() = 0;
+};
+
+struct GlobalSIGQUITExecutorImpl {
+  mutex mut;
+  HasDumpEverythingOnSIGQUIT* handler;
+
+  void Set(HasDumpEverythingOnSIGQUIT* instance) {
+    lock_guard<mutex> lock(mut);
+    handler = instance;
+  }
+
+  void Unset() {
+    lock_guard<mutex> lock(mut);
+    handler = nullptr;
+  }
+
+  void HandleSIGQUIT() {
+    lock_guard<mutex> lock(mut);
+    if (handler) {
+      handler->DumpEverythingOnSIGQUIT();
+    } else {
+      cout << endl << "No coroutines executor in scope." << endl;
+    }
   }
 };
 
-class ExecutorInstance {
+inline GlobalSIGQUITExecutorImpl& GlobalSIGQUITExecutor() {
+  static GlobalSIGQUITExecutorImpl impl;
+  return impl;
+}
+
+class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
  private:
   thread worker;
   TimeUnits time_now = TimeUnits::Zero();
@@ -217,7 +262,8 @@ class ExecutorInstance {
   std::condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
-  map<TimeUnits, deque<function<void()>>> jobs;
+  using job_t = pair<function<void()>, CoroutineLifetime*>;
+  map<TimeUnits, deque<job_t>> jobs;
 
   // A quick & hacky way to wait until everything is done, at scope destruction.
   mutex unlock_when_done;
@@ -227,18 +273,23 @@ class ExecutorInstance {
   // NOTE(dkorolev): Even a plain counter would do. But this example is extra safe and extra illustative.
   set<CoroutineLifetime*> coroutines;
 
+  // Set by the `Thread`, temporarily, while doing the work for the respective coroutine.
+  // Used for "rich stack traces".
+  CoroutineLifetime* current_coroutine = nullptr;
+
  protected:
   friend class ExecutorScope;
   ExecutorInstance() : worker([this]() { Thread(); }) {
+    GlobalSIGQUITExecutor().Set(this);
     unlock_when_done.lock();
   }
 
-  function<void()> GetNextTask() {
+  job_t GetNextTask() {
     while (true) {
       {
         unique_lock<mutex> lock(executor_mut);
         if (executor_time_to_terminate_thread) {
-          return nullptr;
+          return {nullptr, nullptr};
         }
         while (!jobs.empty() && jobs.begin()->second.empty()) {
           jobs.erase(jobs.begin());
@@ -255,7 +306,7 @@ class ExecutorInstance {
             time_now = it_time_moment->first;
           }
           auto it_job = it_time_moment->second.begin();
-          function<void()> extracted = *it_job;
+          job_t extracted = *it_job;
           it_time_moment->second.erase(it_job);
           return extracted;
         } else {
@@ -279,13 +330,16 @@ class ExecutorInstance {
 
     while (true) {
       // `GetNextTask()` a) is the blocking call, and b) returns `nullptr` once signaled termination.
-      function<void()> next_task = GetNextTask();
-      if (!next_task) {
+      job_t next_task = GetNextTask();
+      if (!next_task.first) {
         ExecutorForThisThread().Unset(*this);
         unlock_when_done.unlock();
         return;
       }
-      next_task();
+      current_coroutine = next_task.second;
+      current_coroutine->MarkAsNotAwaiting();
+      next_task.first();
+      current_coroutine = nullptr;
 #ifdef TELEMETRY
       ++stats.total_worker_steps;
 #endif
@@ -293,8 +347,15 @@ class ExecutorInstance {
   }
 
   friend class ExecutorCoroutineScope;
+  deque<std::string> next_register_call;
   void Register(CoroutineLifetime* coro) {
-    ScheduleNext([coro]() { coro->ResumeFromExecutorWorkerThread(); });
+    if (next_register_call.empty()) {
+      cout << "FATAL: Expecting a coroutine that is starting, but it did not happen." << endl;
+      terminate();
+    }
+    coro->name = next_register_call.front();
+    next_register_call.pop_front();
+    ScheduleNext({[coro]() { coro->ResumeFromExecutorWorkerThread(); }, coro});
     if (coroutines.count(coro)) {
       terminate();
     }
@@ -315,6 +376,22 @@ class ExecutorInstance {
     }
   }
 
+  friend class GlobalSIGQUITExecutorImpl;
+  void DumpEverythingOnSIGQUIT() override {
+    lock_guard<mutex> lock(executor_mut);
+
+    cout << endl
+         << endl
+         << ">>> Executor: time " << time_now.AsNumber() << " units, " << jobs.size() << " queued tasks, "
+         << coroutines.size() << " coroutine frames." << endl;
+
+    for (auto& c : coroutines) {
+      cout << ">>> " << c->name << ' ' << c->status << endl;
+    }
+
+    cout << ">>> Ctrl+\\ log done." << endl << endl;
+  }
+
  public:
 #ifdef TELEMETRY
   ExecutorStats stats;
@@ -323,9 +400,10 @@ class ExecutorInstance {
   ~ExecutorInstance() {
     worker.join();
     unlock_when_done.lock();
+    GlobalSIGQUITExecutor().Unset();
   }
 
-  void ScheduleNext(function<void()> code) {
+  void ScheduleNext(job_t code) {
     {
       lock_guard<mutex> lock(executor_mut);
       jobs[time_now].push_front(code);
@@ -333,7 +411,7 @@ class ExecutorInstance {
     cv.notify_one();
   }
 
-  void Schedule(TimeUnits delay, function<void()> code) {
+  void Schedule(TimeUnits delay, job_t code) {
     if (!delay) {
       cout << "`Schedule()` is for the future, use `ScheduleNext()` for the present." << endl;
       terminate();
@@ -352,8 +430,15 @@ class ExecutorInstance {
   }
 
   // For in-depth debug traces only.
-  ExecutorCurrentCoroutineInstance CurrentCoroutune() {
-    return ExecutorCurrentCoroutineInstance();
+  CoroutineLifetime& CurrentCoroutine() {
+    if (!current_coroutine) {
+      terminate();
+    }
+    return *current_coroutine;
+  }
+
+  void AnnotateNextRegisterCallAs(string fn, string file, int line) {
+    next_register_call.push_back(fn);
   }
 };
 
@@ -570,12 +655,14 @@ class Sleep final {
   }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
-    Executor().Schedule(delay, [h]() {
+    Executor().Schedule(delay,
+                        {[h]() {
 #ifdef TELEMETRY
-      ++Executor().stats.total_sleep_resumes;
+                           ++Executor().stats.total_sleep_resumes;
 #endif
-      h.resume();
-    });
+                           h.resume();
+                         },
+                         &global_sleeper});
   }
 
   void await_resume() noexcept {
@@ -652,11 +739,20 @@ FN(IsDivisibleByFive, bool, int value) {
   RETURN((value % 5) == 0);
 }
 
-FN(CoroFizzBuzz, void, function<Async<bool>(string)> next) {
+// NOTE(dkorolev): The current implementation of `FN` makes it impossible to pass the function as a parameter.
+// So, hardcoding `Print` into `CoroFizzBuzz` for now. Sigh.
+FN(Printer, bool, string s) {
+  static int total = 0;
+  cout << ++total << " : " << s << ", at " << Executor().Now() << " time units, from thread " << CurrentThreadName()
+       << endl;
+  RETURN(total < 15);
+}
+
+FN(CoroFizzBuzz, void) {
   int value = 0;
   while (true) {
     ++value;
-#if 1
+#if 0
     // This commit makes "casting" `bool` into `Async<bool>` perfectly legal.
     // Note that this change also breaks `g++`, and this is why this demo is in `clang++`.
     Async<bool> awaitable_d3 = SyncIsDivisibleByThree(value);
@@ -667,17 +763,17 @@ FN(CoroFizzBuzz, void, function<Async<bool>(string)> next) {
     bool const d3 = AWAIT(awaitable_d3);
     bool const d5 = AWAIT(awaitable_d5);
     if (d3) {
-      if (!(AWAIT(next("Fizz")))) {
+      if (!AWAIT(Printer("Fizz"))) {
         RETURN();
       }
     }
     if (d5) {
-      if (!(AWAIT(next("Buzz")))) {
+      if (!AWAIT(Printer("Buzz"))) {
         RETURN();
       }
     }
     if (!d3 && !d5) {
-      if (!(AWAIT(next(to_string(value))))) {
+      if (!AWAIT(Printer(to_string(value)))) {
         RETURN();
       }
     }
@@ -685,17 +781,16 @@ FN(CoroFizzBuzz, void, function<Async<bool>(string)> next) {
 }
 
 void RunCoroFizzBuzz() {
-  int total = 0;
-
   ExecutorScope executor;
 
-  CoroFizzBuzz([&total](string s) -> Async<bool> {
-    cout << ++total << " : " << s << ", at " << Executor().Now() << " time units, from thread " << CurrentThreadName()
-         << endl;
-    RETURN(total < 15);
-  });
+  CoroFizzBuzz();
 
   cout << "main() done, but will wait for the executor to complete its tasks." << endl;
+}
+
+void handle_sigquit(int signum) {
+  static_cast<void>(signum);
+  GlobalSIGQUITExecutor().HandleSIGQUIT();
 }
 
 int main(int argc, char** argv) {
@@ -706,6 +801,8 @@ int main(int argc, char** argv) {
 #else
 #error "Must have either `DEBUG` or `NDEBUG` `#define`-d."
 #endif
+
+  signal(SIGQUIT, handle_sigquit);
 
   CurrentThreadName() = "main()";
 
