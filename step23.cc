@@ -1,4 +1,4 @@
-// Added real `sleep()`-s back to the now-simulated time.
+// Made `cout` thread-safe.
 
 #include <condition_variable>
 #include <iostream>
@@ -6,7 +6,7 @@
 #include <functional>
 #include <queue>
 #include <thread>
-#include <chrono>
+#include <chrono>  // NOT NEEDED!
 #include <future>
 #include <atomic>
 #include <mutex>
@@ -25,9 +25,9 @@
 
 using std::atomic_bool;
 using std::atomic_int;
-using std::cout;
+// using std::cout;
 using std::deque;
-using std::endl;
+// using std::endl;
 using std::flush;
 using std::function;
 using std::future;
@@ -49,6 +49,37 @@ using std::unique_lock;
 using std::unique_ptr;
 using namespace std::chrono_literals;
 using std::this_thread::sleep_for;
+
+struct ThreadSafeCoutSection : std::ostream {
+  lock_guard<mutex> lock;
+  ThreadSafeCoutSection(mutex& mut) : lock(mut) {
+  }
+
+  struct Endl {};
+
+  template <typename T>
+  ThreadSafeCoutSection& operator<<(T&& x) {
+    std::cout << std::forward<T>(x);
+    return *this;
+  }
+
+  ThreadSafeCoutSection& operator<<(Endl) {
+    std::cout << std::endl;
+    return *this;
+  }
+};
+
+struct ThreadSafeCout {
+  mutex mut;
+
+  template <typename T>
+  ThreadSafeCoutSection& operator<<(T&& x) {
+    return ThreadSafeCoutSection(mut) << std::forward<T>(x);
+  }
+};
+
+static ThreadSafeCout cout;
+static ThreadSafeCoutSection::Endl endl;
 
 inline string& CurrentThreadName() {
   static thread_local string current_thread_name = "<a yet unnamed thread>";
@@ -121,7 +152,9 @@ struct ExecutorStats {
 
 struct TimeUnits {
   uint64_t tu;
-  static TimeUnits Zero() { return TimeUnits{0}; }
+  static TimeUnits Zero() {
+    return TimeUnits{0};
+  }
   operator bool() const {
     return tu != 0;
   }
