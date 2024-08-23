@@ -121,6 +121,7 @@ struct ExecutorStats {
 
 struct TimeUnits {
   uint64_t tu;
+  static TimeUnits Zero() { return TimeUnits{0}; }
   operator bool() const {
     return tu != 0;
   }
@@ -147,7 +148,7 @@ TimeUnits operator"" _tu(unsigned long long v) {
 class ExecutorInstance {
  private:
   thread worker;
-  TimeUnits time_now = TimeUnits(0);
+  TimeUnits time_now = TimeUnits::Zero();
 
   bool executor_time_to_terminate_thread = false;
 
