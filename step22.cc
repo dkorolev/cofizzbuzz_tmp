@@ -1,4 +1,4 @@
-// The time is now simulated.
+// Added real `sleep()`-s back to the now-simulated time.
 
 #include <condition_variable>
 #include <iostream>
@@ -6,6 +6,7 @@
 #include <functional>
 #include <queue>
 #include <thread>
+#include <chrono>
 #include <future>
 #include <atomic>
 #include <mutex>
@@ -18,6 +19,8 @@
 #ifdef DEBUG
 #define TELEMETRY
 #define PRINT_SIMULATED_TIME
+#else
+#define SLEEP_PER_SIMULATED_TIME_UNIT 1ms  // Sleeping for 1ms per simulated time unit.
 #endif
 
 using std::atomic_bool;
@@ -44,22 +47,13 @@ using std::thread;
 using std::to_string;
 using std::unique_lock;
 using std::unique_ptr;
+using namespace std::chrono_literals;
+using std::this_thread::sleep_for;
 
 inline string& CurrentThreadName() {
   static thread_local string current_thread_name = "<a yet unnamed thread>";
   return current_thread_name;
 }
-
-/*
-struct TimestampMS final {
-  milliseconds time_point;
-  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(TimestampMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
-};
-*/
 
 class ExecutorInstance;
 
@@ -153,7 +147,6 @@ TimeUnits operator"" _tu(unsigned long long v) {
 class ExecutorInstance {
  private:
   thread worker;
-  // TimestampMS const t0;
   TimeUnits time_now = TimeUnits(0);
 
   bool executor_time_to_terminate_thread = false;
@@ -194,6 +187,9 @@ class ExecutorInstance {
 #ifdef PRINT_SIMULATED_TIME
             cout << "Advancing time from " << time_now << " to " << it_time_moment->first << endl;
 #endif
+#ifdef SLEEP_PER_SIMULATED_TIME_UNIT
+            sleep_for(SLEEP_PER_SIMULATED_TIME_UNIT * (it_time_moment->first.AsNumber() - time_now.AsNumber()));
+#endif
             time_now = it_time_moment->first;
           }
           auto it_job = it_time_moment->second.begin();
@@ -201,9 +197,8 @@ class ExecutorInstance {
           it_time_moment->second.erase(it_job);
           return extracted;
         } else {
-          // cout << "WAITING" << endl;
+          // Note that now this code is properly waiting on the condition variable!
           cv.wait(lock, [this]() { return !executor_time_to_terminate_thread && !jobs.empty(); });
-          // cout << "WAITING: DONE" << endl;
         }
       }
     }
