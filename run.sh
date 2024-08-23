@@ -13,11 +13,11 @@ fi
 echo "Testing $STEP in $MODE mode."
 if [ "$MODE" == "debug" ] ; then
   mkdir -p .debug
-  g++ -g -O0 -DDEBUG -std=c++20 $STEP -o .debug/binary -Wno-unqualified-std-cast-call
+  clang++ -g -O0 -DDEBUG -std=c++20 $STEP -o .debug/binary -Wno-unqualified-std-cast-call
   .debug/binary
 elif [ "$MODE" == "release" ] ; then
   mkdir -p .release
-  g++ -O3 -DNDEBUG -std=c++20 $STEP -o .release/binary -Wno-unqualified-std-cast-call
+  clang++ -O3 -DNDEBUG -std=c++20 $STEP -o .release/binary -Wno-unqualified-std-cast-call
   .release/binary
 else
   echo '$MODE must be `debug` or `release`.'
