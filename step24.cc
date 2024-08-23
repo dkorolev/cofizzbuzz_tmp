@@ -52,8 +52,13 @@ using std::unique_ptr;
 using namespace std::chrono_literals;
 using std::this_thread::sleep_for;
 
-#define AWAIT(x) co_await x
+// AWAIT: Note what exactly is being awaited on.
+#define AWAIT(x) (Executor().CurrentCoroutune().MarkAsAwaiting(__FILE__, __LINE__, #x), co_await x)
+
+// RETURN: Unneeded, just to keep the style the same.
 #define RETURN(...) co_return __VA_ARGS__
+
+// FN: Declare an async function that tells notes itself as the one being called.
 #define FN(name, retval, ...)                         \
   inline Async<retval> name##_impl(__VA_ARGS__);      \
   template <typename... ARGS>                         \
@@ -195,6 +200,11 @@ inline std::ostream& operator<<(std::ostream& os, TimeUnits const& tu) {
 TimeUnits operator"" _tu(unsigned long long v) {
   return TimeUnits{v};
 }
+
+struct ExecutorCurrentCoroutineInstance {
+  void MarkAsAwaiting(string, int, string) {
+  }
+};
 
 class ExecutorInstance {
  private:
@@ -339,6 +349,11 @@ class ExecutorInstance {
   uint64_t Now() const {
     lock_guard<mutex> lock(executor_mut);
     return time_now.AsNumber();
+  }
+
+  // For in-depth debug traces only.
+  ExecutorCurrentCoroutineInstance CurrentCoroutune() {
+    return ExecutorCurrentCoroutineInstance();
   }
 };
 
