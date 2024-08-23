@@ -13,6 +13,7 @@
 #include <map>
 #include <set>
 #include <coroutine>
+#include <type_traits>
 #include <vector>
 
 #ifdef DEBUG
@@ -296,16 +297,27 @@ struct CoroutineRetvalHolder<void> : CoroutineRetvalHolderBase {
 template <typename RETVAL>
 struct CoroutineAwaitResume {
   CoroutineRetvalHolder<RETVAL>* pself;
+  RETVAL immediate;
+
+  struct FromImmediate {};
+
   explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : pself(&self) {
   }
 
+  explicit CoroutineAwaitResume(FromImmediate, RETVAL immediate) : pself(nullptr), immediate(std::move(immediate)) {
+  }
+
   RETVAL await_resume() noexcept {
-    lock_guard<mutex> lock(pself->mut);
-    if (!pself->returned) {
-      // Internal error: `await_resume()` should only be called once the result is available.
-      terminate();
+    if (pself) {
+      lock_guard<mutex> lock(pself->mut);
+      if (!pself->returned) {
+        // Internal error: `await_resume()` should only be called once the result is available.
+        terminate();
+      }
+      return pself->value;
+    } else {
+      return immediate;
     }
-    return pself->value;
   }
 };
 
@@ -360,7 +372,15 @@ struct Async : CoroutineAwaitResume<RETVAL> {
     }
   };
 
-  explicit Async(promise_type::ConstructAsync, promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
+  Async(promise_type::ConstructAsync, promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
+  }
+
+  /*
+  template <typename X = RETVAL, typename = typename std::enable_if<!std::is_void_v<X>>::type>  //!std::is_void<X>::value>>
+  Async(RETVAL immediate) : CoroutineAwaitResume<RETVAL>(CoroutineAwaitResume<RETVAL>::FromImmediate(), std::move(immediate)) {}
+  */
+
+  Async(bool b) : CoroutineAwaitResume<RETVAL>(typename CoroutineAwaitResume<RETVAL>::FromImmediate(), b) {
   }
 
   bool await_ready() noexcept {
@@ -469,8 +489,8 @@ inline Async<> CoroFizzBuzz(function<Async<bool>(string)> next) {
   int value = 0;
   while (true) {
     ++value;
-    // Async<bool> awaitable_d3 = ((value % 3) == 0);  // IsDivisibleByThree(value);
-    Async<bool> awaitable_d3 = IsDivisibleByThree(value);
+    Async<bool> awaitable_d3 = ((value % 3) == 0);
+    // Async<bool> awaitable_d3 = IsDivisibleByThree(value);
     Async<bool> awaitable_d5 = IsDivisibleByFive(value);
     bool const d3 = co_await awaitable_d3;
     bool const d5 = co_await awaitable_d5;
