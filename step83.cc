@@ -1,4 +1,4 @@
-// Measuring the time each step takes, confirming it's 20ms == 10ms + 10ms.
+// A [one-off] demo of using futures+promises. Less of a callback hell, but `sleep` is still sync.
 
 #include <iostream>
 #include <string>
@@ -6,6 +6,7 @@
 #include <queue>
 #include <thread>
 #include <chrono>
+#include <future>
 
 using std::cout;
 using std::endl;
@@ -14,6 +15,8 @@ using std::queue;
 using std::string;
 using std::to_string;
 using namespace std::chrono_literals;
+using std::future;
+using std::promise;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -46,20 +49,22 @@ struct FizzBuzzGenerator {
     };
     if (next_values.empty()) {
       ++value;
-      IsDivisibleByThree(value, [this, InvokeCbThenNext](bool d3) {
-        IsDivisibleByFive(value, [this, InvokeCbThenNext, d3](bool d5) {
-          if (d3) {
-            next_values.push("Fizz");
-          }
-          if (d5) {
-            next_values.push("Buzz");
-          }
-          if (!d3 && !d5) {
-            next_values.push(to_string(value));
-          }
-          InvokeCbThenNext();
-        });
-      });
+      promise<bool> pd3;
+      promise<bool> pd5;
+      IsDivisibleByThree(value, [&pd3](bool d3) { pd3.set_value(d3); });
+      IsDivisibleByFive(value, [&pd5](bool d5) { pd5.set_value(d5); });
+      bool const d3 = pd3.get_future().get();
+      bool const d5 = pd5.get_future().get();
+      if (d3) {
+        next_values.push("Fizz");
+      }
+      if (d5) {
+        next_values.push("Buzz");
+      }
+      if (!d3 && !d5) {
+        next_values.push(to_string(value));
+      }
+      InvokeCbThenNext();
     } else {
       InvokeCbThenNext();
     }
