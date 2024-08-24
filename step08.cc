@@ -1,4 +1,4 @@
-// Everything is printed from thread `main()` now, of course.
+// Logging thread names, to illustrate the "work" is done by a large number of "dedicated" threads.
 
 #include <iostream>
 #include <string>
@@ -31,6 +31,12 @@ inline string& CurrentThreadName() {
   return current_thread_name;
 }
 
+struct TimestampMS final {
+  milliseconds time_point;
+  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
+};
+
 static atomic_int idx_d3 = 0;
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   // NOTE(dkorolev): Could use `[=]`, but want to keep it readable.
@@ -58,15 +64,8 @@ inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
       .detach();
 }
 
-struct SubtractableMS final {
-  std::chrono::milliseconds time_point;
-  explicit SubtractableMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
-  int operator-(SubtractableMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
-};
-
 struct FizzBuzzGenerator {
   int value = 0;
-  bool done = false;
   queue<string> next_values;
   void Next(function<void(string)> cb, function<void()> next) {
     auto const InvokeCbThenNext = [this, cb, next]() {
@@ -111,16 +110,21 @@ int main() {
 
   FizzBuzzGenerator g;
   int total = 0;
-  auto t0 = SubtractableMS();
+  auto t0 = TimestampMS();
+
   function<void(string)> Print = [&total, &t0](string s) {
-    auto t1 = SubtractableMS();
+    auto t1 = TimestampMS();
     cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
     t0 = t1;
   };
+
   function<void()> KeepGoing = [&]() {
     if (total < 15) {
       g.Next(Print, KeepGoing);
     }
   };
+
+  // Kick off the run.
+  // It will initiate the series of "call back-s", via the executor, from its thread.
   KeepGoing();
 }
