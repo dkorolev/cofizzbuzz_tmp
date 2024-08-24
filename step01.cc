@@ -7,9 +7,9 @@
 
 using std::cout;
 using std::endl;
+using std::function;
 using std::string;
 using std::to_string;
-using std::function;
 
 struct FizzBuzzGenerator {
   int value = 0;
@@ -41,8 +41,6 @@ int main() {
   FizzBuzzGenerator g;
   int total = 0;
   while (total < 16) {
-    g.Next([&total](string s) {
-      cout << ++total << " : " << s << endl;
-    });
+    g.Next([&total](string s) { cout << ++total << " : " << s << endl; });
   }
 }

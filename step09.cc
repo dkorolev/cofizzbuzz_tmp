@@ -68,11 +68,8 @@ inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
 
 struct SubtractableMS final {
   std::chrono::milliseconds time_point;
-  explicit SubtractableMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(SubtractableMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
+  explicit SubtractableMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(SubtractableMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
 struct FizzBuzzGenerator {
@@ -90,8 +87,7 @@ struct FizzBuzzGenerator {
       function<void(string)> cb;
       function<void()> next;
       AsyncCaller(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-          : self(self), cb(std::move(cb)), next(std::move(next)) {
-      }
+          : self(self), cb(std::move(cb)), next(std::move(next)) {}
       mutex mut;
       bool has_d3 = false;
       bool has_d5 = false;

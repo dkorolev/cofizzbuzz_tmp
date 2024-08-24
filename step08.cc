@@ -17,14 +17,14 @@ using std::queue;
 using std::string;
 using std::to_string;
 using namespace std::chrono_literals;
+using std::atomic_int;
 using std::future;
 using std::promise;
+using std::thread;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 using std::this_thread::sleep_for;
-using std::thread;
-using std::atomic_int;
 
 inline string& CurrentThreadName() {
   static thread_local string current_thread_name = "<a yet unnamed thread>";
@@ -34,29 +34,34 @@ inline string& CurrentThreadName() {
 static atomic_int idx_d3 = 0;
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   // NOTE(dkorolev): Could use `[=]`, but want to keep it readable.
-  thread([](int value, function<void(bool)> cb) {
-    CurrentThreadName() = "IsDivisibleByThree[" + to_string(++idx_d3) + ']';
-    sleep_for(10ms);
-    cb((value % 3) == 0);
-  }, value, cb).detach();
+  thread(
+      [](int value, function<void(bool)> cb) {
+        CurrentThreadName() = "IsDivisibleByThree[" + to_string(++idx_d3) + ']';
+        sleep_for(10ms);
+        cb((value % 3) == 0);
+      },
+      value,
+      cb)
+      .detach();
 }
 
 static atomic_int idx_d5 = 0;
 inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
-  thread([](int value, function<void(bool)> cb) {
-    CurrentThreadName() = "IsDivisibleByFive[" + to_string(++idx_d5) + ']';
-    sleep_for(10ms);
-    cb((value % 5) == 0);
-  }, value, cb).detach();
+  thread(
+      [](int value, function<void(bool)> cb) {
+        CurrentThreadName() = "IsDivisibleByFive[" + to_string(++idx_d5) + ']';
+        sleep_for(10ms);
+        cb((value % 5) == 0);
+      },
+      value,
+      cb)
+      .detach();
 }
 
 struct SubtractableMS final {
   std::chrono::milliseconds time_point;
-  explicit SubtractableMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(SubtractableMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
+  explicit SubtractableMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(SubtractableMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
 struct FizzBuzzGenerator {
@@ -109,7 +114,7 @@ int main() {
   auto t0 = SubtractableMS();
   function<void(string)> Print = [&total, &t0](string s) {
     auto t1 = SubtractableMS();
-    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName()<< endl;
+    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
     t0 = t1;
   };
   function<void()> KeepGoing = [&]() {

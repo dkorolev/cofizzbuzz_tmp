@@ -44,11 +44,8 @@ inline string& CurrentThreadName() {
 
 struct TimestampMS final {
   milliseconds time_point;
-  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(TimestampMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
+  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
 class ExecutorInstance;
@@ -101,9 +98,7 @@ class ExecutorInstance {
 
  protected:
   friend class ExecutorScope;
-  ExecutorInstance() : worker([this]() { Thread(); }) {
-    unlock_when_done.lock();
-  }
+  ExecutorInstance() : worker([this]() { Thread(); }) { unlock_when_done.lock(); }
 
   function<void()> GetNextTask() {
     while (true) {
@@ -175,18 +170,12 @@ class ExecutorScope {
   ExecutorInstance executor;
 
  public:
-  ExecutorScope() {
-    ExecutorForThisThread().Set(executor);
-  }
+  ExecutorScope() { ExecutorForThisThread().Set(executor); }
 
-  ~ExecutorScope() {
-    ExecutorForThisThread().Unset(executor);
-  }
+  ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
-inline ExecutorInstance& Executor() {
-  return ExecutorForThisThread().Instance();
-}
+inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance(); }
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   Executor().Schedule(10ms, [=]() { cb((value % 3) == 0); });
@@ -210,8 +199,7 @@ struct FizzBuzzGenerator {
     function<void(string)> cb;
     function<void()> next;
     AsyncNextStepLogic(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-        : self(self), cb(cb), next(next) {
-    }
+        : self(self), cb(cb), next(next) {}
     mutex mut;
     bool has_d3 = false;
     bool has_d5 = false;

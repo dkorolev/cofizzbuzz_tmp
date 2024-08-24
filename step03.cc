@@ -7,18 +7,14 @@
 
 using std::cout;
 using std::endl;
-using std::string;
-using std::to_string;
 using std::function;
 using std::queue;
+using std::string;
+using std::to_string;
 
-inline bool IsDivisibleByThree(int value) {
-  return (value % 3) == 0;
-}
+inline bool IsDivisibleByThree(int value) { return (value % 3) == 0; }
 
-inline bool IsDivisibleByFive(int value) {
-  return (value % 5) == 0;
-}
+inline bool IsDivisibleByFive(int value) { return (value % 5) == 0; }
 
 struct FizzBuzzGenerator {
   int value = 0;
@@ -56,8 +52,6 @@ int main() {
   FizzBuzzGenerator g;
   int total = 0;
   while (total < 15) {
-    g.Next([&total](string s) {
-      cout << ++total << " : " << s << endl;
-    });
+    g.Next([&total](string s) { cout << ++total << " : " << s << endl; });
   }
 }

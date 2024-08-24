@@ -44,11 +44,8 @@ inline string& CurrentThreadName() {
 
 struct TimestampMS final {
   milliseconds time_point;
-  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(TimestampMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
+  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
 struct ExecutorInstance {
@@ -62,8 +59,7 @@ struct ExecutorInstance {
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
   multimap<int, function<void()>> jobs;
 
-  ExecutorInstance() : worker([this]() { Thread(); }) {
-  }
+  ExecutorInstance() : worker([this]() { Thread(); }) {}
 
   void Schedule(milliseconds delay, function<void()> code) {
     lock_guard<mutex> lock(mut);
@@ -148,8 +144,7 @@ struct FizzBuzzGenerator {
     function<void(string)> cb;
     function<void()> next;
     AsyncNextStepLogic(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-        : self(self), cb(cb), next(next) {
-    }
+        : self(self), cb(cb), next(next) {}
     mutex mut;
     bool has_d3 = false;
     bool has_d5 = false;
@@ -189,12 +184,8 @@ struct FizzBuzzGenerator {
       ++value;
       // Need a shared instance so that it outlives both the called and either of the async calls.
       auto shared_async_caller_instance = make_shared<AsyncNextStepLogic>(this, cb, next);
-      IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) {
-        shared_async_caller_instance->SetD3(d3);
-      });
-      IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) {
-        shared_async_caller_instance->SetD5(d5);
-      });
+      IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) { shared_async_caller_instance->SetD3(d3); });
+      IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) { shared_async_caller_instance->SetD5(d5); });
     }
   }
 };

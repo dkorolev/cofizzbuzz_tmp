@@ -18,34 +18,39 @@ using std::to_string;
 using namespace std::chrono_literals;
 using std::future;
 using std::promise;
+using std::thread;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 using std::this_thread::sleep_for;
-using std::thread;
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   // NOTE(dkorolev): Could use `[=]`, but want to keep it readable.
-  thread([](int value, function<void(bool)> cb) {
-    sleep_for(10ms);
-    cb((value % 3) == 0);
-  }, value, cb).detach();
+  thread(
+      [](int value, function<void(bool)> cb) {
+        sleep_for(10ms);
+        cb((value % 3) == 0);
+      },
+      value,
+      cb)
+      .detach();
 }
 
 inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
-  thread([](int value, function<void(bool)> cb) {
-    sleep_for(10ms);
-    cb((value % 5) == 0);
-  }, value, cb).detach();
+  thread(
+      [](int value, function<void(bool)> cb) {
+        sleep_for(10ms);
+        cb((value % 5) == 0);
+      },
+      value,
+      cb)
+      .detach();
 }
 
 struct SubtractableMS final {
   std::chrono::milliseconds time_point;
-  explicit SubtractableMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(SubtractableMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
+  explicit SubtractableMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(SubtractableMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
 struct FizzBuzzGenerator {

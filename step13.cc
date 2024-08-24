@@ -44,11 +44,8 @@ inline string& CurrentThreadName() {
 
 struct TimestampMS final {
   milliseconds time_point;
-  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(TimestampMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
+  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
 class ExecutorInstance;
@@ -108,9 +105,7 @@ class ExecutorInstance {
 
  protected:
   friend class ExecutorScope;
-  ExecutorInstance() : worker([this]() { Thread(); }) {
-    unlock_when_done.lock();
-  }
+  ExecutorInstance() : worker([this]() { Thread(); }) { unlock_when_done.lock(); }
 
   function<void()> GetNextTask() {
     while (true) {
@@ -182,18 +177,12 @@ class ExecutorScope {
   ExecutorInstance executor;
 
  public:
-  ExecutorScope() {
-    ExecutorForThisThread().Set(executor);
-  }
+  ExecutorScope() { ExecutorForThisThread().Set(executor); }
 
-  ~ExecutorScope() {
-    ExecutorForThisThread().Unset(executor);
-  }
+  ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
-inline ExecutorInstance& Executor() {
-  return ExecutorForThisThread().Instance();
-}
+inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance(); }
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   Executor().Schedule(10ms, [=]() { cb((value % 3) == 0); });
@@ -216,8 +205,7 @@ struct FizzBuzzGenerator {
     function<void(string)> cb;
     function<void()> next;
     AsyncNextStepLogic(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-        : self(self), cb(cb), next(next) {
-    }
+        : self(self), cb(cb), next(next) {}
     mutex mut;
     bool has_d3 = false;
     bool has_d5 = false;
@@ -271,13 +259,9 @@ struct Coroutine {
 
     using handle_type = std::coroutine_handle<promise_type>;
 
-    Coroutine get_return_object() {
-      return Coroutine(handle_type::from_promise(*this), unlocked_when_coro_done);
-    }
+    Coroutine get_return_object() { return Coroutine(handle_type::from_promise(*this), unlocked_when_coro_done); }
 
-    std::suspend_always initial_suspend() noexcept {
-      return {};
-    }
+    std::suspend_always initial_suspend() noexcept { return {}; }
 
     std::suspend_never final_suspend() noexcept {
       unlocked_when_coro_done.unlock();
@@ -285,11 +269,9 @@ struct Coroutine {
       return {};
     }
 
-    void return_void() noexcept {
-    }
+    void return_void() noexcept {}
 
-    void unhandled_exception() noexcept {
-    }
+    void unhandled_exception() noexcept {}
   };
 
   explicit Coroutine(promise_type::handle_type coro, mutex& unlocked_when_coro_done) noexcept
@@ -315,19 +297,15 @@ class Sleep final {
   milliseconds const ms;
 
  public:
-  explicit Sleep(milliseconds ms) : ms(ms) {
-  }
+  explicit Sleep(milliseconds ms) : ms(ms) {}
 
-  constexpr bool await_ready() noexcept {
-    return false;
-  }
+  constexpr bool await_ready() noexcept { return false; }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
     Executor().Schedule(ms, [h]() { h.resume(); });
   }
 
-  void await_resume() noexcept {
-  }
+  void await_resume() noexcept {}
 };
 
 void RunExampleCoroutine() {

@@ -127,18 +127,10 @@ struct ExecutorStats {
 
 struct TimeUnits {
   uint64_t tu;
-  operator bool() const {
-    return tu != 0;
-  }
-  bool operator<(TimeUnits rhs) const {
-    return tu < rhs.tu;
-  }
-  TimeUnits operator+(TimeUnits delta) const {
-    return TimeUnits{tu + delta.tu};
-  }
-  uint64_t AsNumber() const {
-    return tu;
-  }
+  operator bool() const { return tu != 0; }
+  bool operator<(TimeUnits rhs) const { return tu < rhs.tu; }
+  TimeUnits operator+(TimeUnits delta) const { return TimeUnits{tu + delta.tu}; }
+  uint64_t AsNumber() const { return tu; }
 };
 
 inline std::ostream& operator<<(std::ostream& os, TimeUnits const& tu) {
@@ -146,9 +138,7 @@ inline std::ostream& operator<<(std::ostream& os, TimeUnits const& tu) {
   return os;
 }
 
-TimeUnits operator"" _tu(unsigned long long v) {
-  return TimeUnits{v};
-}
+TimeUnits operator"" _tu(unsigned long long v) { return TimeUnits{v}; }
 
 class ExecutorInstance {
  private:
@@ -174,9 +164,7 @@ class ExecutorInstance {
 
  protected:
   friend class ExecutorScope;
-  ExecutorInstance() : worker([this]() { Thread(); }) {
-    unlock_when_done.lock();
-  }
+  ExecutorInstance() : worker([this]() { Thread(); }) { unlock_when_done.lock(); }
 
   function<void()> GetNextTask() {
     while (true) {
@@ -301,30 +289,20 @@ class ExecutorScope {
   ExecutorInstance executor;
 
  public:
-  ExecutorScope() {
-    ExecutorForThisThread().Set(executor);
-  }
+  ExecutorScope() { ExecutorForThisThread().Set(executor); }
 
-  ~ExecutorScope() {
-    ExecutorForThisThread().Unset(executor);
-  }
+  ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
-inline ExecutorInstance& Executor() {
-  return ExecutorForThisThread().Instance();
-}
+inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance(); }
 
 class ExecutorCoroutineScope {
  private:
   CoroutineLifetime* coro;
 
  public:
-  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) {
-    Executor().Register(coro);
-  }
-  ~ExecutorCoroutineScope() {
-    Executor().Unregister(coro);
-  }
+  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) { Executor().Register(coro); }
+  ~ExecutorCoroutineScope() { Executor().Unregister(coro); }
 };
 
 // The "minimalistic" coroutine runner integrated with the executor.
@@ -376,11 +354,9 @@ struct CoroutineAwaitResume {
   CoroutineRetvalHolder<RETVAL>* pself;
   RETVAL immediate_value;
 
-  CoroutineAwaitResume(RETVAL immediate) : pself(nullptr), immediate_value(immediate) {
-  }
+  CoroutineAwaitResume(RETVAL immediate) : pself(nullptr), immediate_value(immediate) {}
 
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : pself(&self) {
-  }
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : pself(&self) {}
 
   RETVAL await_resume() noexcept {
     if (pself) {
@@ -400,11 +376,9 @@ template <>
 struct CoroutineAwaitResume<void> {
   CoroutineRetvalHolder<void>* pself;
 
-  CoroutineAwaitResume() : pself(nullptr) {
-  }
+  CoroutineAwaitResume() : pself(nullptr) {}
 
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : pself(&self) {
-  }
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : pself(&self) {}
 
   void await_resume() noexcept {
     if (pself) {
@@ -441,9 +415,7 @@ struct Async : CoroutineAwaitResume<RETVAL> {
       return {};
     }
 
-    void unhandled_exception() noexcept {
-      terminate();
-    }
+    void unhandled_exception() noexcept { terminate(); }
 
     void ResumeFromExecutorWorkerThread() override {
 #ifdef TELEMETRY
@@ -453,8 +425,7 @@ struct Async : CoroutineAwaitResume<RETVAL> {
     }
   };
 
-  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
-  }
+  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {}
 
   using CoroutineAwaitResume<RETVAL>::CoroutineAwaitResume;
 
@@ -500,12 +471,9 @@ class Sleep final {
   TimeUnits const delay;
 
  public:
-  explicit Sleep(TimeUnits delay) : delay(delay) {
-  }
+  explicit Sleep(TimeUnits delay) : delay(delay) {}
 
-  constexpr bool await_ready() noexcept {
-    return false;
-  }
+  constexpr bool await_ready() noexcept { return false; }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
     Executor().Schedule(delay, [h]() {
@@ -516,8 +484,7 @@ class Sleep final {
     });
   }
 
-  void await_resume() noexcept {
-  }
+  void await_resume() noexcept {}
 };
 
 inline Async<bool> IsEven(int x) {
@@ -570,9 +537,7 @@ void RunExampleCoroutine() {
   // as soon as the last outstanding coroutine is done with its execution!
 }
 
-inline bool SyncIsDivisibleByThree(int value) {
-  return ((value % 3) == 0);
-}
+inline bool SyncIsDivisibleByThree(int value) { return ((value % 3) == 0); }
 
 inline Async<bool> IsDivisibleByThree(int value) {
   co_await Sleep(10_tu);

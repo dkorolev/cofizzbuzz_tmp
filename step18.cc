@@ -53,11 +53,8 @@ inline string& CurrentThreadName() {
 
 struct TimestampMS final {
   milliseconds time_point;
-  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(TimestampMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
+  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
 class ExecutorInstance;
@@ -130,9 +127,7 @@ class ExecutorInstance {
 
  protected:
   friend class ExecutorScope;
-  ExecutorInstance() : worker([this]() { Thread(); }) {
-    unlock_when_done.lock();
-  }
+  ExecutorInstance() : worker([this]() { Thread(); }) { unlock_when_done.lock(); }
 
   function<void()> GetNextTask() {
     while (true) {
@@ -223,30 +218,20 @@ class ExecutorScope {
   ExecutorInstance executor;
 
  public:
-  ExecutorScope() {
-    ExecutorForThisThread().Set(executor);
-  }
+  ExecutorScope() { ExecutorForThisThread().Set(executor); }
 
-  ~ExecutorScope() {
-    ExecutorForThisThread().Unset(executor);
-  }
+  ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
-inline ExecutorInstance& Executor() {
-  return ExecutorForThisThread().Instance();
-}
+inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance(); }
 
 class ExecutorCoroutineScope {
  private:
   CoroutineLifetime* coro;
 
  public:
-  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) {
-    Executor().Register(coro);
-  }
-  ~ExecutorCoroutineScope() {
-    Executor().Unregister(coro);
-  }
+  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) { Executor().Register(coro); }
+  ~ExecutorCoroutineScope() { Executor().Unregister(coro); }
 };
 
 // The "minimalistic" coroutine runner integrated with the executor.
@@ -296,8 +281,7 @@ struct CoroutineRetvalHolder<void> : CoroutineRetvalHolderBase {
 template <typename RETVAL>
 struct CoroutineAwaitResume {
   CoroutineRetvalHolder<RETVAL>& self;
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : self(self) {
-  }
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : self(self) {}
 
   RETVAL await_resume() noexcept {
     lock_guard<mutex> lock(self.mut);
@@ -313,8 +297,7 @@ template <>
 struct CoroutineAwaitResume<void> {
   CoroutineRetvalHolder<void>& self;
 
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : self(self) {
-  }
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : self(self) {}
 
   void await_resume() noexcept {
     lock_guard<mutex> lock(self.mut);
@@ -349,17 +332,14 @@ struct Async : CoroutineAwaitResume<RETVAL> {
       return {};
     }
 
-    void unhandled_exception() noexcept {
-      terminate();
-    }
+    void unhandled_exception() noexcept { terminate(); }
 
     void ResumeFromExecutorWorkerThread() override {
       std::coroutine_handle<promise_type>::from_promise(*this).resume();
     }
   };
 
-  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
-  }
+  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {}
 
   bool await_ready() noexcept {
     lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::self.mut);
@@ -381,19 +361,15 @@ class Sleep final {
   milliseconds const ms;
 
  public:
-  explicit Sleep(milliseconds ms) : ms(ms) {
-  }
+  explicit Sleep(milliseconds ms) : ms(ms) {}
 
-  constexpr bool await_ready() noexcept {
-    return false;
-  }
+  constexpr bool await_ready() noexcept { return false; }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
     Executor().Schedule(ms, [h]() { h.resume(); });
   }
 
-  void await_resume() noexcept {
-  }
+  void await_resume() noexcept {}
 };
 
 inline Async<bool> IsEven(int x) {
