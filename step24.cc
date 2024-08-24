@@ -23,8 +23,8 @@
 #undef PRINT_SIMULATED_TIME
 #endif
 
-// Slow down the "original" pace 10x.
-#define SLEEP_PER_SIMULATED_TIME_UNIT 10ms  // Sleeping for 10ms per simulated time unit.
+// Slow down the "original" pace 10x, from 1ms per "simulated time unit" to 10ms per "simulated time unit".
+#define SLEEP_PER_SIMULATED_TIME_UNIT 10ms
 
 using std::atomic_bool;
 using std::atomic_int;
@@ -54,13 +54,14 @@ using namespace std::chrono_literals;
 using std::pair;
 using std::this_thread::sleep_for;
 
-// AWAIT: Note what exactly this corouting is awaiting on.
+// AWAIT: Note what exactly this corouting is awaiting on, for it to show in the `Ctrl+\` output.
 #define AWAIT(x) (Executor().CurrentCoroutine().MarkAsAwaiting(__FILE__, __LINE__, #x), co_await x)
 
 // RETURN: Unneeded, just to keep the style consistent.
 #define RETURN(...) co_return __VA_ARGS__
 
 // FN: Declare an async function that marks itself as the one that's executing.
+// NOTE(dkorolev): This is by no means production-grade, just as an illustration.
 #define FN(name, retval, ...)                                         \
   inline Async<retval> name##_impl(__VA_ARGS__);                      \
   template <typename... ARGS>                                         \
@@ -72,8 +73,7 @@ using std::this_thread::sleep_for;
 
 struct ThreadSafeCoutSection {
   lock_guard<mutex> lock;
-  ThreadSafeCoutSection(mutex& mut) : lock(mut) {
-  }
+  ThreadSafeCoutSection(mutex& mut) : lock(mut) {}
 
   struct Endl {};
 
@@ -157,14 +157,12 @@ struct CoroutineLifetime {
     status = "awaiting on " + expression + " @ " + file + ':' + to_string(line);
   }
 
-  void MarkAsNotAwaiting() {
-    status = "running";
-  }
+  void MarkAsNotAwaiting() { status = "running"; }
 };
 
 struct CoroutineLifetimeSleeper : CoroutineLifetime {
   void ResumeFromExecutorWorkerThread() override {
-    terminate();  // Never called, this `sleeper` is just to act as the key in the telemetry map.
+    terminate();  // Never called, this `sleeper` is just to act as the key in the "active fibers" map.
   }
 };
 
@@ -191,21 +189,11 @@ struct ExecutorStats {
 
 struct TimeUnits {
   uint64_t tu;
-  static TimeUnits Zero() {
-    return TimeUnits{0};
-  }
-  operator bool() const {
-    return tu != 0;
-  }
-  bool operator<(TimeUnits rhs) const {
-    return tu < rhs.tu;
-  }
-  TimeUnits operator+(TimeUnits delta) const {
-    return TimeUnits{tu + delta.tu};
-  }
-  uint64_t AsNumber() const {
-    return tu;
-  }
+  static TimeUnits Zero() { return TimeUnits{0}; }
+  operator bool() const { return tu != 0; }
+  bool operator<(TimeUnits rhs) const { return tu < rhs.tu; }
+  TimeUnits operator+(TimeUnits delta) const { return TimeUnits{tu + delta.tu}; }
+  uint64_t AsNumber() const { return tu; }
 };
 
 inline std::ostream& operator<<(std::ostream& os, TimeUnits const& tu) {
@@ -213,19 +201,19 @@ inline std::ostream& operator<<(std::ostream& os, TimeUnits const& tu) {
   return os;
 }
 
-TimeUnits operator"" _tu(unsigned long long v) {
-  return TimeUnits{v};
-}
+TimeUnits operator"" _tu(unsigned long long v) { return TimeUnits{v}; }
 
 struct HasDumpEverythingOnSIGQUIT {
   virtual ~HasDumpEverythingOnSIGQUIT() = default;
   virtual void DumpEverythingOnSIGQUIT() = 0;
 };
 
-struct GlobalSIGQUITExecutorImpl {
+class GlobalSIGQUITExecutorImpl {
+ private:
   mutex mut;
   HasDumpEverythingOnSIGQUIT* handler;
 
+ public:
   void Set(HasDumpEverythingOnSIGQUIT* instance) {
     lock_guard<mutex> lock(mut);
     handler = instance;
@@ -258,7 +246,7 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
 
   bool executor_time_to_terminate_thread = false;
 
-  mutable mutex executor_mut;
+  mutable mutex mut;
   std::condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
@@ -287,7 +275,7 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
   job_t GetNextTask() {
     while (true) {
       {
-        unique_lock<mutex> lock(executor_mut);
+        unique_lock<mutex> lock(mut);
         if (executor_time_to_terminate_thread) {
           return {nullptr, nullptr};
         }
@@ -369,7 +357,7 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
     coroutines.erase(it);
     if (coroutines.empty()) {
       {
-        lock_guard<mutex> lock(executor_mut);
+        lock_guard<mutex> lock(mut);
         executor_time_to_terminate_thread = true;
       }
       cv.notify_one();
@@ -378,12 +366,12 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
 
   friend class GlobalSIGQUITExecutorImpl;
   void DumpEverythingOnSIGQUIT() override {
-    lock_guard<mutex> lock(executor_mut);
+    lock_guard<mutex> lock(mut);
 
     cout << endl
          << endl
          << ">>> Executor: time " << time_now.AsNumber() << " units, " << jobs.size() << " queued tasks, "
-         << coroutines.size() << " coroutine frames." << endl;
+         << coroutines.size() << " fibers running." << endl;
 
     for (auto& c : coroutines) {
       cout << ">>> " << c->name << ' ' << c->status << endl;
@@ -405,7 +393,7 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
 
   void ScheduleNext(job_t code) {
     {
-      lock_guard<mutex> lock(executor_mut);
+      lock_guard<mutex> lock(mut);
       jobs[time_now].push_front(code);
     }
     cv.notify_one();
@@ -413,11 +401,11 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
 
   void Schedule(TimeUnits delay, job_t code) {
     if (!delay) {
-      cout << "`Schedule()` is for the future, use `ScheduleNext()` for the present." << endl;
+      cout << "`Schedule()` is for what's delayed, use `ScheduleNext()` for immediate execution." << endl;
       terminate();
     }
     {
-      lock_guard<mutex> lock(executor_mut);
+      lock_guard<mutex> lock(mut);
       jobs[time_now + delay].push_back(code);
     }
     cv.notify_one();
@@ -425,7 +413,7 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
 
   // Return time in units, mostly for demo purposes.
   uint64_t Now() const {
-    lock_guard<mutex> lock(executor_mut);
+    lock_guard<mutex> lock(mut);
     return time_now.AsNumber();
   }
 
@@ -437,41 +425,33 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
     return *current_coroutine;
   }
 
-  void AnnotateNextRegisterCallAs(string fn, string file, int line) {
+  // The hacky way to journal what exactly is about to be started by this executor's `Thread()`.
+  void AnnotateNextRegisterCallAs(string const& fn, string const& file, int line) {
+    static_cast<void>(file);
+    static_cast<void>(line);
     next_register_call.push_back(fn);
   }
 };
 
+// The instance of the executor is created and owned by `ExecutorScope`.
 class ExecutorScope {
  private:
-  // The instance of the executor is created and owned by `ExecutorScope`.
   ExecutorInstance executor;
 
  public:
-  ExecutorScope() {
-    ExecutorForThisThread().Set(executor);
-  }
-
-  ~ExecutorScope() {
-    ExecutorForThisThread().Unset(executor);
-  }
+  ExecutorScope() { ExecutorForThisThread().Set(executor); }
+  ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
-inline ExecutorInstance& Executor() {
-  return ExecutorForThisThread().Instance();
-}
+inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance(); }
 
 class ExecutorCoroutineScope {
  private:
   CoroutineLifetime* coro;
 
  public:
-  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) {
-    Executor().Register(coro);
-  }
-  ~ExecutorCoroutineScope() {
-    Executor().Unregister(coro);
-  }
+  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) { Executor().Register(coro); }
+  ~ExecutorCoroutineScope() { Executor().Unregister(coro); }
 };
 
 // The "minimalistic" coroutine runner integrated with the executor.
@@ -523,11 +503,9 @@ struct CoroutineAwaitResume {
   CoroutineRetvalHolder<RETVAL>* pself;
   RETVAL immediate_value;
 
-  CoroutineAwaitResume(RETVAL immediate) : pself(nullptr), immediate_value(immediate) {
-  }
+  CoroutineAwaitResume(RETVAL immediate) : pself(nullptr), immediate_value(immediate) {}
 
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : pself(&self) {
-  }
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : pself(&self) {}
 
   RETVAL await_resume() noexcept {
     if (pself) {
@@ -547,11 +525,9 @@ template <>
 struct CoroutineAwaitResume<void> {
   CoroutineRetvalHolder<void>* pself;
 
-  CoroutineAwaitResume() : pself(nullptr) {
-  }
+  CoroutineAwaitResume() : pself(nullptr) {}
 
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : pself(&self) {
-  }
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : pself(&self) {}
 
   void await_resume() noexcept {
     if (pself) {
@@ -588,9 +564,7 @@ struct Async : CoroutineAwaitResume<RETVAL> {
       return {};
     }
 
-    void unhandled_exception() noexcept {
-      terminate();
-    }
+    void unhandled_exception() noexcept { terminate(); }
 
     void ResumeFromExecutorWorkerThread() override {
 #ifdef TELEMETRY
@@ -600,8 +574,7 @@ struct Async : CoroutineAwaitResume<RETVAL> {
     }
   };
 
-  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {
-  }
+  explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {}
 
   using CoroutineAwaitResume<RETVAL>::CoroutineAwaitResume;
 
@@ -647,12 +620,9 @@ class Sleep final {
   TimeUnits const delay;
 
  public:
-  explicit Sleep(TimeUnits delay) : delay(delay) {
-  }
+  explicit Sleep(TimeUnits delay) : delay(delay) {}
 
-  constexpr bool await_ready() noexcept {
-    return false;
-  }
+  constexpr bool await_ready() noexcept { return false; }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
     Executor().Schedule(delay,
@@ -665,14 +635,11 @@ class Sleep final {
                          &global_sleeper});
   }
 
-  void await_resume() noexcept {
-  }
+  void await_resume() noexcept {}
 };
 
 // Prove that the macro also works for zero-arguments functions.
-FN(Sleep1, void) {
-  AWAIT(Sleep(1_tu));
-}
+FN(Sleep1, void) { AWAIT(Sleep(1_tu)); }
 
 FN(IsEven, bool, int x) {
   // Confirm multiple suspend/resume steps work just fine.
@@ -724,9 +691,7 @@ void RunExampleCoroutine() {
   // as soon as the last outstanding coroutine is done with its execution!
 }
 
-inline bool SyncIsDivisibleByThree(int value) {
-  return ((value % 3) == 0);
-}
+inline bool SyncIsDivisibleByThree(int value) { return ((value % 3) == 0); }
 
 FN(IsDivisibleByThree, bool, int value) {
   AWAIT(Sleep(10_tu));
