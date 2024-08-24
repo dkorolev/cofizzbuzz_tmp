@@ -1,4 +1,4 @@
-// Executor counters and debug logging.
+// Made immediate values first-class citizens.
 
 #include <iostream>
 #include <string>
@@ -279,30 +279,42 @@ struct CoroutineRetvalHolder<void> : CoroutineRetvalHolderBase {
 
 template <typename RETVAL>
 struct CoroutineAwaitResume {
-  CoroutineRetvalHolder<RETVAL>& self;
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : self(self) {}
+  CoroutineRetvalHolder<RETVAL>* pself;
+  RETVAL immediate_value;
+
+  CoroutineAwaitResume(RETVAL immediate) : pself(nullptr), immediate_value(immediate) {}
+
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<RETVAL>& self) : pself(&self) {}
 
   RETVAL await_resume() noexcept {
-    lock_guard<mutex> lock(self.mut);
-    if (!self.returned) {
-      // Internal error: `await_resume()` should only be called once the result is available.
-      terminate();
+    if (pself) {
+      lock_guard<mutex> lock(pself->mut);
+      if (!pself->returned) {
+        // Internal error: `await_resume()` should only be called once the result is available.
+        terminate();
+      }
+      return pself->value;
+    } else {
+      return immediate_value;
     }
-    return self.value;
   }
 };
 
 template <>
 struct CoroutineAwaitResume<void> {
-  CoroutineRetvalHolder<void>& self;
+  CoroutineRetvalHolder<void>* pself;
 
-  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : self(self) {}
+  CoroutineAwaitResume() : pself(nullptr) {}
+
+  explicit CoroutineAwaitResume(CoroutineRetvalHolder<void>& self) : pself(&self) {}
 
   void await_resume() noexcept {
-    lock_guard<mutex> lock(self.mut);
-    if (!self.returned) {
-      // Internal error: `await_resume()` should only be called once the result is available.
-      terminate();
+    if (pself) {
+      lock_guard<mutex> lock(pself->mut);
+      if (!pself->returned) {
+        // Internal error: `await_resume()` should only be called once the result is available.
+        terminate();
+      }
     }
   }
 };
@@ -340,17 +352,28 @@ struct Async : CoroutineAwaitResume<RETVAL> {
 
   explicit Async(promise_type& self) : CoroutineAwaitResume<RETVAL>(self) {}
 
+  using CoroutineAwaitResume<RETVAL>::CoroutineAwaitResume;
+
   bool await_ready() noexcept {
-    lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::self.mut);
-    return CoroutineAwaitResume<RETVAL>::self.returned;
+    if (CoroutineAwaitResume<RETVAL>::pself) {
+      lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::pself->mut);
+      return CoroutineAwaitResume<RETVAL>::pself->returned;
+    } else {
+      return true;
+    }
   }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
-    lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::self.mut);
-    if (CoroutineAwaitResume<RETVAL>::self.returned) {
-      h.resume();
+    if (CoroutineAwaitResume<RETVAL>::pself) {
+      lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::pself->mut);
+      if (CoroutineAwaitResume<RETVAL>::pself->returned) {
+        h.resume();
+      } else {
+        CoroutineAwaitResume<RETVAL>::pself->to_resume.push_back(h);
+      }
     } else {
-      CoroutineAwaitResume<RETVAL>::self.to_resume.push_back(h);
+      cout << "FATAL: Should never attempt to `await_suspend` an immediate value." << endl;
+      terminate();
     }
   }
 };
@@ -417,6 +440,8 @@ void RunExampleCoroutine() {
   // as soon as the last outstanding coroutine is done with its execution!
 }
 
+inline bool SyncIsDivisibleByThree(int value) { return ((value % 3) == 0); }
+
 inline Async<bool> IsDivisibleByThree(int value) {
   co_await Sleep(10ms);
   co_return (value % 3) == 0;
@@ -433,7 +458,13 @@ inline Async<> CoroFizzBuzz(function<Async<bool>(string)> next) {
   int value = 0;
   while (true) {
     ++value;
+#if 1
+    // This commit makes "casting" `bool` into `Async<bool>` perfectly legal.
+    // This `#if 1` takes the "total number of steps" down to 61 from 91.
+    Async<bool> awaitable_d3 = SyncIsDivisibleByThree(value);
+#else
     Async<bool> awaitable_d3 = IsDivisibleByThree(value);
+#endif
     Async<bool> awaitable_d5 = IsDivisibleByFive(value);
     bool const d3 = co_await awaitable_d3;
     bool const d5 = co_await awaitable_d5;
