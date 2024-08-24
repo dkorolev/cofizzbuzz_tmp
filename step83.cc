@@ -1,4 +1,4 @@
-// Use detached threads to have `10ms + 10ms = 10ms` "total" wait.
+// Logging thread names, to illustrate the "work" is done by a large number of "dedicated" threads.
 
 #include <iostream>
 #include <string>
@@ -8,6 +8,7 @@
 #include <chrono>
 #include <future>
 #include <thread>
+#include <atomic>
 
 using std::cout;
 using std::endl;
@@ -16,6 +17,7 @@ using std::queue;
 using std::string;
 using std::to_string;
 using namespace std::chrono_literals;
+using std::atomic_int;
 using std::future;
 using std::promise;
 using std::thread;
@@ -24,16 +26,23 @@ using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 using std::this_thread::sleep_for;
 
+inline string& CurrentThreadName() {
+  static thread_local string current_thread_name = "<a yet unnamed thread>";
+  return current_thread_name;
+}
+
 struct TimestampMS final {
   milliseconds time_point;
   explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
   int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
+static atomic_int idx_d3 = 0;
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   // NOTE(dkorolev): Could use `[=]`, but want to keep it readable.
   thread(
       [](int value, function<void(bool)> cb) {
+        CurrentThreadName() = "IsDivisibleByThree[" + to_string(++idx_d3) + ']';
         sleep_for(10ms);
         cb((value % 3) == 0);
       },
@@ -42,9 +51,11 @@ inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
       .detach();
 }
 
+static atomic_int idx_d5 = 0;
 inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
   thread(
       [](int value, function<void(bool)> cb) {
+        CurrentThreadName() = "IsDivisibleByFive[" + to_string(++idx_d5) + ']';
         sleep_for(10ms);
         cb((value % 5) == 0);
       },
@@ -95,13 +106,15 @@ int main() {
 #error "Must have either `DEBUG` or `NDEBUG` `#define`-d."
 #endif
 
+  CurrentThreadName() = "main()";
+
   FizzBuzzGenerator g;
   int total = 0;
   auto t0 = TimestampMS();
 
   function<void(string)> Print = [&total, &t0](string s) {
     auto t1 = TimestampMS();
-    cout << ++total << " : " << s << " (in " << (t1 - t0) << "ms)" << endl;
+    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
     t0 = t1;
   };
 
