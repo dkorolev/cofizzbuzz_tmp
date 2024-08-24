@@ -253,9 +253,9 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
   // A quick & hacky way to wait until everything is done, at scope destruction.
   mutex unlock_when_done;
 
-  // The coroutines still running.
-  // Will declare termination once the last one is done -- UNLESS CONFIGURED OTHERWISE!
-  // NOTE(dkorolev): Even a plain counter would do. But this example is extra safe and extra illustative.
+  // The coroutines (coroutine frames, or fibers), that are currently running.
+  // Will declare termination once the last one is done.
+  // NOTE(dkorolev): Even a plain inc/dec counter would do. But this example is extra safe and extra illustative.
   set<CoroutineLifetime*> coroutines;
 
   // Set by the `Thread`, temporarily, while doing the work for the respective coroutine.
