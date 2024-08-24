@@ -1,4 +1,4 @@
-// A [one-off] demo of using futures+promises. Less of a callback hell, but `sleep` is still sync.
+// Use detached threads to have `10ms + 10ms = 10ms` "total" wait.
 
 #include <iostream>
 #include <string>
@@ -7,6 +7,7 @@
 #include <thread>
 #include <chrono>
 #include <future>
+#include <thread>
 
 using std::cout;
 using std::endl;
@@ -17,6 +18,7 @@ using std::to_string;
 using namespace std::chrono_literals;
 using std::future;
 using std::promise;
+using std::thread;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -29,13 +31,26 @@ struct TimestampMS final {
 };
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
-  sleep_for(10ms);
-  cb((value % 3) == 0);
+  // NOTE(dkorolev): Could use `[=]`, but want to keep it readable.
+  thread(
+      [](int value, function<void(bool)> cb) {
+        sleep_for(10ms);
+        cb((value % 3) == 0);
+      },
+      value,
+      cb)
+      .detach();
 }
 
 inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
-  sleep_for(10ms);
-  cb((value % 5) == 0);
+  thread(
+      [](int value, function<void(bool)> cb) {
+        sleep_for(10ms);
+        cb((value % 5) == 0);
+      },
+      value,
+      cb)
+      .detach();
 }
 
 struct FizzBuzzGenerator {
