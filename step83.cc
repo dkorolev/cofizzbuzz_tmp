@@ -1,9 +1,10 @@
-// Introduced (synchronous) `IsDivisibleBy{Three,Five}`.
+// Now "async"-style `IsDivisibleBy{Three,Five}`, a.k.a. the "callback hell".
 
 #include <iostream>
 #include <string>
 #include <functional>
 #include <queue>
+#include <thread>
 
 using std::cout;
 using std::endl;
@@ -11,31 +12,47 @@ using std::function;
 using std::queue;
 using std::string;
 using std::to_string;
+using namespace std::chrono_literals;
+using std::this_thread::sleep_for;
 
-inline bool IsDivisibleByThree(int value) { return (value % 3) == 0; }
+inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
+  sleep_for(10ms);
+  cb((value % 3) == 0);
+}
 
-inline bool IsDivisibleByFive(int value) { return (value % 5) == 0; }
+inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
+  sleep_for(10ms);
+  cb((value % 5) == 0);
+}
 
 struct FizzBuzzGenerator {
   int value = 0;
   queue<string> next_values;
-  void Next(function<void(string)> cb) {
+  void Next(function<void(string)> cb, function<void()> next) {
+    auto const InvokeCbThenNext = [this, cb, next]() {
+      cb(next_values.front());
+      next_values.pop();
+      next();
+    };
     if (next_values.empty()) {
       ++value;
-      bool const d3 = IsDivisibleByThree(value);
-      bool const d5 = IsDivisibleByFive(value);
-      if (d3) {
-        next_values.push("Fizz");
-      }
-      if (d5) {
-        next_values.push("Buzz");
-      }
-      if (!d3 && !d5) {
-        next_values.push(to_string(value));
-      }
+      IsDivisibleByThree(value, [this, InvokeCbThenNext](bool d3) {
+        IsDivisibleByFive(value, [this, InvokeCbThenNext, d3](bool d5) {
+          if (d3) {
+            next_values.push("Fizz");
+          }
+          if (d5) {
+            next_values.push("Buzz");
+          }
+          if (!d3 && !d5) {
+            next_values.push(to_string(value));
+          }
+          InvokeCbThenNext();
+        });
+      });
+    } else {
+      InvokeCbThenNext();
     }
-    cb(next_values.front());
-    next_values.pop();
   }
 };
 
@@ -50,7 +67,15 @@ int main() {
 
   FizzBuzzGenerator g;
   int total = 0;
-  while (total < 15) {
-    g.Next([&total](string s) { cout << ++total << " : " << s << endl; });
-  }
+
+  function<void(string)> Print = [&total](string s) { cout << ++total << " : " << s << endl; };
+  function<void()> KeepGoing = [&]() {
+    if (total < 15) {
+      g.Next(Print, KeepGoing);
+    }
+  };
+
+  // Kick off the run.
+  // It will initiate the series of "call back-s", via the executor, from its thread.
+  KeepGoing();
 }
