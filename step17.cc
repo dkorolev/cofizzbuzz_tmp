@@ -1,4 +1,4 @@
-// Extended the template coro return type to <void> too.
+// Using the `Async<>` type for real.
 
 #include <iostream>
 #include <string>

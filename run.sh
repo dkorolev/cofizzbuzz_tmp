@@ -2,8 +2,10 @@
 
 set -e
 
+LAST_STEP=$(ls step*.cc | sort | tail -n 1)
+
 MODE=${1:-debug}
-STEP=$(ls step*.cc | sort | tail -n 1)
+STEP=${2:-$LAST_STEP}
 
 if [ "$MODE" == "clean" ] ; then
   rm -rf .debug .release
