@@ -22,6 +22,7 @@
 
 using std::atomic_bool;
 using std::atomic_int;
+using std::condition_variable;
 using std::cout;
 using std::deque;
 using std::endl;
@@ -44,6 +45,7 @@ using std::thread;
 using std::to_string;
 using std::unique_lock;
 using std::unique_ptr;
+using std::vector;
 
 inline string& CurrentThreadName() {
   static thread_local string current_thread_name = "<a yet unnamed thread>";
@@ -138,7 +140,7 @@ class ExecutorInstance {
   bool executor_time_to_terminate_thread = false;
 
   mutable mutex mut;
-  std::condition_variable cv;
+  condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
   map<TimeUnits, deque<function<void()>>> jobs;
@@ -299,7 +301,7 @@ class ExecutorCoroutineScope {
 struct CoroutineRetvalHolderBase {
   mutable mutex mut;
   bool returned = false;
-  std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+  vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 };
 
 template <typename RETVAL>
