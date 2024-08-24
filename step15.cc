@@ -1,4 +1,4 @@
-// Introduce template coro return type.
+// Made the coroutine return type templated.
 
 #include <iostream>
 #include <string>
@@ -205,14 +205,13 @@ class ExecutorInstance {
   }
 };
 
+// The instance of the executor is created and owned by `ExecutorScope`.
 class ExecutorScope {
  private:
-  // The instance of the executor is created and owned by `ExecutorScope`.
   ExecutorInstance executor;
 
  public:
   ExecutorScope() { ExecutorForThisThread().Set(executor); }
-
   ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
@@ -225,73 +224,6 @@ class ExecutorCoroutineScope {
  public:
   ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) { Executor().Register(coro); }
   ~ExecutorCoroutineScope() { Executor().Unregister(coro); }
-};
-
-inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
-  Executor().Schedule(10ms, [=]() { cb((value % 3) == 0); });
-}
-
-inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
-  Executor().Schedule(10ms, [=]() { cb((value % 5) == 0); });
-}
-
-struct FizzBuzzGenerator {
-  int value = 0;
-  queue<string> next_values;
-  void InvokeCbThenNext(function<void(string)> cb, function<void()> next) {
-    cb(next_values.front());
-    next_values.pop();
-    next();
-  }
-  struct AsyncNextStepLogic {
-    FizzBuzzGenerator* self;
-    function<void(string)> cb;
-    function<void()> next;
-    AsyncNextStepLogic(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-        : self(self), cb(cb), next(next) {}
-    mutex mut;
-    bool has_d3 = false;
-    bool has_d5 = false;
-    bool d3;
-    bool d5;
-    void SetD3(bool d3_value) {
-      lock_guard<mutex> lock(mut);
-      d3 = d3_value;
-      has_d3 = true;
-      ActIfHasAllInputs();
-    }
-    void SetD5(bool d5_value) {
-      lock_guard<mutex> lock(mut);
-      d5 = d5_value;
-      has_d5 = true;
-      ActIfHasAllInputs();
-    }
-    void ActIfHasAllInputs() {
-      if (has_d3 && has_d5) {
-        if (d3) {
-          self->next_values.push("Fizz");
-        }
-        if (d5) {
-          self->next_values.push("Buzz");
-        }
-        if (!d3 && !d5) {
-          self->next_values.push(to_string(self->value));
-        }
-        self->InvokeCbThenNext(cb, next);
-      }
-    }
-  };
-  void Next(function<void(string)> cb, function<void()> next) {
-    if (!next_values.empty()) {
-      InvokeCbThenNext(cb, next);
-    } else {
-      ++value;
-      // Need a shared instance so that it outlives both the called and either of the async calls.
-      auto shared_async_caller_instance = make_shared<AsyncNextStepLogic>(this, cb, next);
-      IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) { shared_async_caller_instance->SetD3(d3); });
-      IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) { shared_async_caller_instance->SetD5(d5); });
-    }
-  }
 };
 
 // The "minimalistic" coroutine runner integrated with the executor.
@@ -462,6 +394,73 @@ void RunExampleCoroutine() {
   // To be more precise, it will wait until it is shut down gracefully, and it will be shut down gracefully
   // as soon as the last outstanding coroutine is done with its execution!
 }
+
+inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
+  Executor().Schedule(10ms, [=]() { cb((value % 3) == 0); });
+}
+
+inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
+  Executor().Schedule(10ms, [=]() { cb((value % 5) == 0); });
+}
+
+struct FizzBuzzGenerator {
+  int value = 0;
+  queue<string> next_values;
+  void InvokeCbThenNext(function<void(string)> cb, function<void()> next) {
+    cb(next_values.front());
+    next_values.pop();
+    next();
+  }
+  struct AsyncNextStepLogic {
+    FizzBuzzGenerator* self;
+    function<void(string)> cb;
+    function<void()> next;
+    AsyncNextStepLogic(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
+        : self(self), cb(cb), next(next) {}
+    mutex mut;
+    bool has_d3 = false;
+    bool has_d5 = false;
+    bool d3;
+    bool d5;
+    void SetD3(bool d3_value) {
+      lock_guard<mutex> lock(mut);
+      d3 = d3_value;
+      has_d3 = true;
+      ActIfHasAllInputs();
+    }
+    void SetD5(bool d5_value) {
+      lock_guard<mutex> lock(mut);
+      d5 = d5_value;
+      has_d5 = true;
+      ActIfHasAllInputs();
+    }
+    void ActIfHasAllInputs() {
+      if (has_d3 && has_d5) {
+        if (d3) {
+          self->next_values.push("Fizz");
+        }
+        if (d5) {
+          self->next_values.push("Buzz");
+        }
+        if (!d3 && !d5) {
+          self->next_values.push(to_string(self->value));
+        }
+        self->InvokeCbThenNext(cb, next);
+      }
+    }
+  };
+  void Next(function<void(string)> cb, function<void()> next) {
+    if (!next_values.empty()) {
+      InvokeCbThenNext(cb, next);
+    } else {
+      ++value;
+      // Need a shared instance so that it outlives both the called and either of the async calls.
+      auto shared_async_caller_instance = make_shared<AsyncNextStepLogic>(this, cb, next);
+      IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) { shared_async_caller_instance->SetD3(d3); });
+      IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) { shared_async_caller_instance->SetD5(d5); });
+    }
+  }
+};
 
 int main() {
 #if defined(NDEBUG) && !defined(DEBUG)
