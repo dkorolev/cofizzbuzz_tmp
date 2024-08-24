@@ -1,4 +1,4 @@
-// Added `#include <coroutine>`! Executing via `resume()`. On an example for now.
+// Introduced `struct Coroutine` to contain the coroutine-related code.
 
 #include <iostream>
 #include <string>
@@ -7,7 +7,6 @@
 #include <thread>
 #include <chrono>
 #include <future>
-#include <thread>
 #include <atomic>
 #include <mutex>
 #include <memory>
@@ -52,7 +51,7 @@ struct TimestampMS final {
 class ExecutorInstance;
 
 struct ExecutorThreadLocalPlaceholder {
-  mutex mut;
+  mutable mutex mut;
   ExecutorInstance* ptr = nullptr;
   ExecutorInstance& Instance() {
     lock_guard<mutex> lock(mut);
@@ -74,6 +73,13 @@ struct ExecutorThreadLocalPlaceholder {
       terminate();
     }
     ptr = nullptr;
+  }
+  void FailIfNoExecutor() const {
+    lock_guard<mutex> lock(mut);
+    if (!ptr) {
+      cout << "No executor, have one in scope before starting the coroutine." << endl;
+      terminate();
+    }
   }
 };
 
@@ -179,20 +185,19 @@ inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance();
 
 // The "minimalistic" coroutine runner.
 // It does `.resume()` once, and then waits until `final_suspend` was invoked on its `promise_type`.
-struct ResumeOnceTask {
+struct Coroutine {
   struct promise_type {
     mutex unlocked_when_coro_done;
 
     using handle_type = std::coroutine_handle<promise_type>;
 
-    ResumeOnceTask get_return_object() {
-      return ResumeOnceTask(handle_type::from_promise(*this), unlocked_when_coro_done);
-    }
+    Coroutine get_return_object() { return Coroutine(handle_type::from_promise(*this), unlocked_when_coro_done); }
 
     std::suspend_always initial_suspend() noexcept { return {}; }
 
     std::suspend_never final_suspend() noexcept {
       unlocked_when_coro_done.unlock();
+      Executor().GracefulShutdown();
       return {};
     }
 
@@ -201,8 +206,9 @@ struct ResumeOnceTask {
     void unhandled_exception() noexcept {}
   };
 
-  explicit ResumeOnceTask(promise_type::handle_type coro, mutex& unlocked_when_coro_done)
+  explicit Coroutine(promise_type::handle_type coro, mutex& unlocked_when_coro_done) noexcept
       : coro(coro), unlocked_when_coro_done(unlocked_when_coro_done) {
+    ExecutorForThisThread().FailIfNoExecutor();
     unlocked_when_coro_done.lock();
   }
 
@@ -227,26 +233,24 @@ class Sleep final {
 
   constexpr bool await_ready() noexcept { return false; }
 
-  void await_suspend(std::coroutine_handle<> h) {
-    thread([ms = this->ms, h]() {
-      sleep_for(ms);
-      h.resume();
-    }).detach();
+  void await_suspend(std::coroutine_handle<> h) noexcept {
+    Executor().Schedule(ms, [h]() { h.resume(); });
   }
 
-  void await_resume() {}
+  void await_resume() noexcept {}
 };
 
 void RunExampleCoroutine() {
-  function<ResumeOnceTask(string)> MultiStepFunction = [](string s) -> ResumeOnceTask {
+  function<Coroutine(string)> MultiStepFunction = [](string s) -> Coroutine {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
       cout << s << ", i=" << i << "/10." << endl;
     }
   };
 
-  ResumeOnceTask task = MultiStepFunction("The MultiStepFunction");
-  task.RunToCompletion();
+  ExecutorScope executor;
+  Coroutine coro = MultiStepFunction("The MultiStepFunction");
+  coro.RunToCompletion();
 }
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
