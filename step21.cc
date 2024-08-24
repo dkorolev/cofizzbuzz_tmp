@@ -133,7 +133,7 @@ TimeUnits operator"" _tu(unsigned long long v) { return TimeUnits{v}; }
 class ExecutorInstance {
  private:
   thread worker;
-  TimeUnits time_now = TimeUnits(0);
+  TimeUnits time_now = TimeUnits::Zero();
 
   bool executor_time_to_terminate_thread = false;
 
