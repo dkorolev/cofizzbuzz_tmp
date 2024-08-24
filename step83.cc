@@ -1,4 +1,4 @@
-// The dedicated, single, executor thread in which the work is done.
+// A thread-local placeholder for the executor, to save on manual "wait 'til done".
 
 #include <iostream>
 #include <string>
@@ -48,7 +48,41 @@ struct TimestampMS final {
   int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
 };
 
-struct ExecutorInstance {
+class ExecutorInstance;
+
+struct ExecutorThreadLocalPlaceholder {
+  mutex mut;
+  ExecutorInstance* ptr = nullptr;
+  ExecutorInstance& Instance() {
+    lock_guard<mutex> lock(mut);
+    if (!ptr) {
+      terminate();
+    }
+    return *ptr;
+  }
+  void Set(ExecutorInstance& ref) {
+    lock_guard<mutex> lock(mut);
+    if (ptr) {
+      terminate();
+    }
+    ptr = &ref;
+  }
+  void Unset(ExecutorInstance& ref) {
+    lock_guard<mutex> lock(mut);
+    if (ptr != &ref) {
+      terminate();
+    }
+    ptr = nullptr;
+  }
+};
+
+ExecutorThreadLocalPlaceholder& ExecutorForThisThread() {
+  static thread_local ExecutorThreadLocalPlaceholder p;
+  return p;
+}
+
+class ExecutorInstance {
+ private:
   thread worker;
   TimestampMS const t0;
 
@@ -59,12 +93,12 @@ struct ExecutorInstance {
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
   multimap<int, function<void()>> jobs;
 
-  ExecutorInstance() : worker([this]() { Thread(); }) {}
+  // A quick & hacky way to wait until everything is done, at scope destruction.
+  mutex unlock_when_done;
 
-  void Schedule(milliseconds delay, function<void()> code) {
-    lock_guard<mutex> lock(mut);
-    jobs.emplace((TimestampMS() - t0) + delay.count(), code);
-  }
+ protected:
+  friend class ExecutorScope;
+  ExecutorInstance() : worker([this]() { Thread(); }) { unlock_when_done.lock(); }
 
   function<void()> GetNextTask() {
     while (true) {
@@ -89,6 +123,7 @@ struct ExecutorInstance {
   }
 
   void Thread() {
+    ExecutorForThisThread().Set(*this);
     auto& name = CurrentThreadName();
     string const goal = "ExecutorInstance";
     if (name == goal) {
@@ -102,10 +137,18 @@ struct ExecutorInstance {
       // `GetNextTask()` a) is the blocking call, and b) returns `nullptr` once signaled termination.
       function<void()> next_task = GetNextTask();
       if (!next_task) {
+        ExecutorForThisThread().Unset(*this);
+        unlock_when_done.unlock();
         return;
       }
       next_task();
     }
+  }
+
+ public:
+  ~ExecutorInstance() {
+    worker.join();
+    unlock_when_done.lock();
   }
 
   void GracefulShutdown() {
@@ -113,14 +156,25 @@ struct ExecutorInstance {
       lock_guard<mutex> lock(mut);
       done = true;
     }
-    worker.join();
+  }
+
+  void Schedule(milliseconds delay, function<void()> code) {
+    lock_guard<mutex> lock(mut);
+    jobs.emplace((TimestampMS() - t0) + delay.count(), code);
   }
 };
 
-inline ExecutorInstance& Executor() {
-  static ExecutorInstance singleton_executor;
-  return singleton_executor;
-}
+// The instance of the executor is created and owned by `ExecutorScope`.
+class ExecutorScope {
+ private:
+  ExecutorInstance executor;
+
+ public:
+  ExecutorScope() { ExecutorForThisThread().Set(executor); }
+  ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
+};
+
+inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance(); }
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   Executor().Schedule(10ms, [=]() { cb((value % 3) == 0); });
@@ -204,10 +258,6 @@ int main() {
   int total = 0;
   auto t0 = TimestampMS();
 
-  // A quick & hacky way to wait until everything is done.
-  mutex unlocked_when_done;
-  unlocked_when_done.lock();
-
   function<void(string)> Print = [&total, &t0](string s) {
     auto t1 = TimestampMS();
     cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
@@ -218,15 +268,19 @@ int main() {
     if (total < 15) {
       g.Next(Print, KeepGoing);
     } else {
-      unlocked_when_done.unlock();
+      Executor().GracefulShutdown();
     }
   };
+
+  // Create an executor for the scope of `main()`.
+  // NOTE(dkorolev): Important that this line happens after `Print` and `KeepGoing` are declared!
+  // Since otherwise they will be destructed before the instance of the `executor`, welcome to the horrors of C++.
+  ExecutorScope executor;
 
   // Kick off the run.
   // It will initiate the series of "call back-s", via the executor, from its thread.
   KeepGoing();
 
-  // NOTE(dkorolev): Now we must wait, otherwise the destroyed instance of `g` will be used from other threads.
-  unlocked_when_done.lock();
-  Executor().GracefulShutdown();
+  // Note that no explicit wait is now required, since the wait is implicit in the destructor of the `ExecutorScope`.
+  cout << "main() done, but will wait for the executor to complete its tasks." << endl;
 }
