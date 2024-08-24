@@ -1,5 +1,4 @@
-// Introduced `bool done = false`.
-// The less ugly way to stop at fifteen is to introduce internal state.
+// Introduced the "cache for the yet unseen value". Stops at 15 now.
 
 #include <iostream>
 #include <string>
@@ -15,7 +14,6 @@ using std::to_string;
 
 struct FizzBuzzGenerator {
   int value = 0;
-  bool done = false;
   queue<string> next_values;
   void Next(function<void(string)> cb) {
     if (next_values.empty()) {
