@@ -48,6 +48,8 @@ using std::to_string;
 using std::unique_lock;
 using std::unique_ptr;
 using namespace std::chrono_literals;
+using std::condition_variable;
+using std::vector;
 using std::this_thread::sleep_for;
 
 inline string& CurrentThreadName() {
@@ -143,7 +145,7 @@ class ExecutorInstance {
   bool executor_time_to_terminate_thread = false;
 
   mutable mutex mut;
-  std::condition_variable cv;
+  condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
   map<TimeUnits, deque<function<void()>>> jobs;
@@ -307,7 +309,7 @@ class ExecutorCoroutineScope {
 struct CoroutineRetvalHolderBase {
   mutable mutex mut;
   bool returned = false;
-  std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+  vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 };
 
 template <typename RETVAL>
