@@ -50,6 +50,8 @@ using std::unique_ptr;
 using namespace std::chrono_literals;
 using std::pair;
 using std::this_thread::sleep_for;
+using std::condition_variable;
+using std::vector;
 
 // AWAIT: Note what exactly this corouting is awaiting on, for it to show in the `Ctrl+\` output.
 #define AWAIT(x) (Executor().CurrentCoroutine().MarkAsAwaiting(__FILE__, __LINE__, #x), co_await x)
@@ -147,8 +149,8 @@ struct CoroutineLifetime {
   virtual ~CoroutineLifetime() = default;
   virtual void ResumeFromExecutorWorkerThread() = 0;
 
-  std::string name = "<unnamed>";
-  std::string status = "starting";
+  string name = "<unnamed>";
+  string status = "starting";
 
   void MarkAsAwaiting(string file, int line, string expression) {
     status = "awaiting on " + expression + " @ " + file + ':' + to_string(line);
@@ -244,7 +246,7 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
   bool executor_time_to_terminate_thread = false;
 
   mutable mutex mut;
-  std::condition_variable cv;
+  condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
   using job_t = pair<function<void()>, CoroutineLifetime*>;
@@ -332,7 +334,7 @@ class ExecutorInstance : HasDumpEverythingOnSIGQUIT {
   }
 
   friend class ExecutorCoroutineScope;
-  deque<std::string> next_register_call;
+  deque<string> next_register_call;
   void Register(CoroutineLifetime* coro) {
     if (next_register_call.empty()) {
       cout << "FATAL: Expecting a coroutine that is starting, but it did not happen." << endl;
@@ -458,7 +460,7 @@ class ExecutorCoroutineScope {
 struct CoroutineRetvalHolderBase {
   mutable mutex mut;
   bool returned = false;
-  std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+  vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 };
 
 template <typename RETVAL>
@@ -663,7 +665,7 @@ FN(Square, int, int x) {
   RETURN(x * x);
 }
 
-FN(MultiStepFunction, void, std::string s) {
+FN(MultiStepFunction, void, string s) {
   for (int i = 1; i <= 10; ++i) {
     AWAIT(Sleep(100_tu));
     cout << s << ", i=" << i << "/10, even=..." << endl;
