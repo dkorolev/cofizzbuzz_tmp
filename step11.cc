@@ -1,4 +1,4 @@
-// Introducing the executor: the thread that runs all the async stuff.
+// A thread-local placeholder for the executor, to save on manual "wait 'til done".
 
 #include <iostream>
 #include <string>
@@ -164,14 +164,13 @@ class ExecutorInstance {
   }
 };
 
+// The instance of the executor is created and owned by `ExecutorScope`.
 class ExecutorScope {
  private:
-  // The instance of the executor is created and owned by `ExecutorScope`.
   ExecutorInstance executor;
 
  public:
   ExecutorScope() { ExecutorForThisThread().Set(executor); }
-
   ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
@@ -187,7 +186,6 @@ inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
 
 struct FizzBuzzGenerator {
   int value = 0;
-  bool done = false;
   queue<string> next_values;
   void InvokeCbThenNext(function<void(string)> cb, function<void()> next) {
     cb(next_values.front());
@@ -279,7 +277,10 @@ int main() {
   // Since otherwise they will be destructed before the instance of the `executor`, welcome to the horrors of C++.
   ExecutorScope executor;
 
+  // Kick off the run.
+  // It will initiate the series of "call back-s", via the executor, from its thread.
   KeepGoing();
 
+  // Note that no explicit wait is now required, since the wait is implicit in the destructor of the `ExecutorScope`.
   cout << "main() done, but will wait for the executor to complete its tasks." << endl;
 }
