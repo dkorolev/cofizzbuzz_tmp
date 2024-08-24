@@ -1,4 +1,4 @@
-// Introduced the "cache for the yet unseen value". Stops at 15 now.
+// Introduced (synchronous) `IsDivisibleBy{Three,Five}`.
 
 #include <iostream>
 #include <string>
@@ -12,14 +12,18 @@ using std::queue;
 using std::string;
 using std::to_string;
 
+inline bool IsDivisibleByThree(int value) { return (value % 3) == 0; }
+
+inline bool IsDivisibleByFive(int value) { return (value % 5) == 0; }
+
 struct FizzBuzzGenerator {
   int value = 0;
   queue<string> next_values;
   void Next(function<void(string)> cb) {
     if (next_values.empty()) {
       ++value;
-      bool const d3 = (value % 3 == 0);
-      bool const d5 = (value % 5 == 0);
+      bool const d3 = IsDivisibleByThree(value);
+      bool const d5 = IsDivisibleByFive(value);
       if (d3) {
         next_values.push("Fizz");
       }
