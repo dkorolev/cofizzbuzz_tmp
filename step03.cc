@@ -1,4 +1,4 @@
-// Introduced sync `IsDivisibleBy{Three,Five}`.
+// Introduced (synchronous) `IsDivisibleBy{Three,Five}`.
 
 #include <iostream>
 #include <string>
@@ -18,7 +18,6 @@ inline bool IsDivisibleByFive(int value) { return (value % 5) == 0; }
 
 struct FizzBuzzGenerator {
   int value = 0;
-  bool done = false;
   queue<string> next_values;
   void Next(function<void(string)> cb) {
     if (next_values.empty()) {
