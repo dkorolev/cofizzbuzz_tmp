@@ -48,10 +48,10 @@ using std::to_string;
 using std::unique_lock;
 using std::unique_ptr;
 using namespace std::chrono_literals;
-using std::pair;
-using std::this_thread::sleep_for;
 using std::condition_variable;
+using std::pair;
 using std::vector;
+using std::this_thread::sleep_for;
 
 // AWAIT: Note what exactly this corouting is awaiting on, for it to show in the `Ctrl+\` output.
 #define AWAIT(x) (Executor().CurrentCoroutine().MarkAsAwaiting(__FILE__, __LINE__, #x), co_await x)
