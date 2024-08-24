@@ -1,4 +1,4 @@
-// Introducing the executor: the thread that runs all the async stuff.
+// The dedicated, single, executor thread in which the work is done.
 
 #include <iostream>
 #include <string>
@@ -132,7 +132,6 @@ inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
 
 struct FizzBuzzGenerator {
   int value = 0;
-  bool done = false;
   queue<string> next_values;
   void InvokeCbThenNext(function<void(string)> cb, function<void()> next) {
     cb(next_values.front());
@@ -204,6 +203,7 @@ int main() {
   FizzBuzzGenerator g;
   int total = 0;
   auto t0 = TimestampMS();
+
   // A quick & hacky way to wait until everything is done.
   mutex unlocked_when_done;
   unlocked_when_done.lock();
@@ -221,6 +221,9 @@ int main() {
       unlocked_when_done.unlock();
     }
   };
+
+  // Kick off the run.
+  // It will initiate the series of "call back-s", via the executor, from its thread.
   KeepGoing();
 
   // NOTE(dkorolev): Now we must wait, otherwise the destroyed instance of `g` will be used from other threads.
