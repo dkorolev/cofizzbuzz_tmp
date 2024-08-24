@@ -1,5 +1,4 @@
-// Initial FizzBuzz.
-// Note how is prints sixteen, not fifteen rows, due to double output on fifteen.
+// Initial FizzBuzz. It skips 15 and prints 16 lines, since sometimes one `.Next()` yields more than one callback call.
 
 #include <iostream>
 #include <string>
@@ -40,7 +39,7 @@ int main() {
 
   FizzBuzzGenerator g;
   int total = 0;
-  while (total < 16) {
+  while (total < 15) {
     g.Next([&total](string s) { cout << ++total << " : " << s << endl; });
   }
 }
