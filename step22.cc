@@ -6,7 +6,6 @@
 #include <functional>
 #include <queue>
 #include <thread>
-#include <chrono>
 #include <future>
 #include <atomic>
 #include <mutex>
@@ -19,9 +18,10 @@
 #ifdef DEBUG
 #define TELEMETRY
 #define PRINT_SIMULATED_TIME
-#else
-#define SLEEP_PER_SIMULATED_TIME_UNIT 1ms  // Sleeping for 1ms per simulated time unit.
 #endif
+
+// Sleeping for 1ms per simulated time unit.
+#define SLEEP_PER_SIMULATED_TIME_UNIT 1ms
 
 using std::atomic_bool;
 using std::atomic_int;
@@ -142,7 +142,7 @@ class ExecutorInstance {
 
   bool executor_time_to_terminate_thread = false;
 
-  mutable mutex executor_mut;
+  mutable mutex mut;
   std::condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
@@ -163,7 +163,7 @@ class ExecutorInstance {
   function<void()> GetNextTask() {
     while (true) {
       {
-        unique_lock<mutex> lock(executor_mut);
+        unique_lock<mutex> lock(mut);
         if (executor_time_to_terminate_thread) {
           return nullptr;
         }
@@ -235,7 +235,7 @@ class ExecutorInstance {
     coroutines.erase(it);
     if (coroutines.empty()) {
       {
-        lock_guard<mutex> lock(executor_mut);
+        lock_guard<mutex> lock(mut);
         executor_time_to_terminate_thread = true;
       }
       cv.notify_one();
@@ -254,7 +254,7 @@ class ExecutorInstance {
 
   void ScheduleNext(function<void()> code) {
     {
-      lock_guard<mutex> lock(executor_mut);
+      lock_guard<mutex> lock(mut);
       jobs[time_now].push_front(code);
     }
     cv.notify_one();
@@ -266,7 +266,7 @@ class ExecutorInstance {
       terminate();
     }
     {
-      lock_guard<mutex> lock(executor_mut);
+      lock_guard<mutex> lock(mut);
       jobs[time_now + delay].push_back(code);
     }
     cv.notify_one();
@@ -274,19 +274,18 @@ class ExecutorInstance {
 
   // Return time in units, mostly for demo purposes.
   uint64_t Now() const {
-    lock_guard<mutex> lock(executor_mut);
+    lock_guard<mutex> lock(mut);
     return time_now.AsNumber();
   }
 };
 
+// The instance of the executor is created and owned by `ExecutorScope`.
 class ExecutorScope {
  private:
-  // The instance of the executor is created and owned by `ExecutorScope`.
   ExecutorInstance executor;
 
  public:
   ExecutorScope() { ExecutorForThisThread().Set(executor); }
-
   ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
