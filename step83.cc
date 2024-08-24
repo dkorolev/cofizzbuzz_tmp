@@ -1,4 +1,4 @@
-// The return value of the coroutine is now stored in the base `<T>` class.
+// Using the `Async<>` type for real.
 
 #include <iostream>
 #include <string>
@@ -410,74 +410,59 @@ void RunExampleCoroutine() {
   // as soon as the last outstanding coroutine is done with its execution!
 }
 
-inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
-  Executor().Schedule(10ms, [=]() { cb((value % 3) == 0); });
+inline Coro<bool> IsDivisibleByThree(int value) {
+  co_await Sleep(10ms);
+  co_return (value % 3) == 0;
 }
 
-inline void IsDivisibleByFive(int value, function<void(bool)> cb) {
-  Executor().Schedule(10ms, [=]() { cb((value % 5) == 0); });
+inline Coro<bool> IsDivisibleByFive(int value) {
+  co_await Sleep(10ms);
+  co_return (value % 5) == 0;
 }
 
-struct FizzBuzzGenerator {
+inline Coro<> CoroFizzBuzz(function<Coro<bool>(string)> next) {
   int value = 0;
-  queue<string> next_values;
-  void InvokeCbThenNext(function<void(string)> cb, function<void()> next) {
-    cb(next_values.front());
-    next_values.pop();
-    next();
-  }
-  struct AsyncNextStepLogic {
-    FizzBuzzGenerator* self;
-    function<void(string)> cb;
-    function<void()> next;
-    AsyncNextStepLogic(FizzBuzzGenerator* self, function<void(string)> cb, function<void()> next)
-        : self(self), cb(cb), next(next) {}
-    mutex mut;
-    bool has_d3 = false;
-    bool has_d5 = false;
-    bool d3;
-    bool d5;
-    void SetD3(bool d3_value) {
-      lock_guard<mutex> lock(mut);
-      d3 = d3_value;
-      has_d3 = true;
-      ActIfHasAllInputs();
-    }
-    void SetD5(bool d5_value) {
-      lock_guard<mutex> lock(mut);
-      d5 = d5_value;
-      has_d5 = true;
-      ActIfHasAllInputs();
-    }
-    void ActIfHasAllInputs() {
-      if (has_d3 && has_d5) {
-        if (d3) {
-          self->next_values.push("Fizz");
-        }
-        if (d5) {
-          self->next_values.push("Buzz");
-        }
-        if (!d3 && !d5) {
-          self->next_values.push(to_string(self->value));
-        }
-        self->InvokeCbThenNext(cb, next);
+  while (true) {
+    ++value;
+    Coro<bool> awaitable_d3 = IsDivisibleByThree(value);
+    Coro<bool> awaitable_d5 = IsDivisibleByFive(value);
+    bool const d3 = co_await awaitable_d3;
+    bool const d5 = co_await awaitable_d5;
+    if (d3) {
+      if (!(co_await next("Fizz"))) {
+        co_return;
       }
     }
-  };
-  void Next(function<void(string)> cb, function<void()> next) {
-    if (!next_values.empty()) {
-      InvokeCbThenNext(cb, next);
-    } else {
-      ++value;
-      // Need a shared instance so that it outlives both the called and either of the async calls.
-      auto shared_async_caller_instance = make_shared<AsyncNextStepLogic>(this, cb, next);
-      IsDivisibleByThree(value, [shared_async_caller_instance](bool d3) { shared_async_caller_instance->SetD3(d3); });
-      IsDivisibleByFive(value, [shared_async_caller_instance](bool d5) { shared_async_caller_instance->SetD5(d5); });
+    if (d5) {
+      if (!(co_await next("Buzz"))) {
+        co_return;
+      }
+    }
+    if (!d3 && !d5) {
+      if (!(co_await next(to_string(value)))) {
+        co_return;
+      }
     }
   }
-};
+}
 
-int main() {
+void RunCoroFizzBuzz() {
+  int total = 0;
+  auto t0 = TimestampMS();
+
+  ExecutorScope executor;
+
+  CoroFizzBuzz([&total, &t0](string s) -> Coro<bool> {
+    auto t1 = TimestampMS();
+    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
+    t0 = t1;
+    co_return (total < 15);
+  });
+
+  cout << "main() done, but will wait for the executor to complete its tasks." << endl;
+}
+
+int main(int argc, char** argv) {
 #if defined(NDEBUG) && !defined(DEBUG)
   cout << "Running the NDEBUG build." << endl;
 #elif defined(DEBUG) && !defined(NDEBUG)
@@ -488,35 +473,9 @@ int main() {
 
   CurrentThreadName() = "main()";
 
-  RunExampleCoroutine();
-  return 0;
-
-  FizzBuzzGenerator g;
-  int total = 0;
-  auto t0 = TimestampMS();
-
-  function<void(string)> Print = [&total, &t0](string s) {
-    auto t1 = TimestampMS();
-    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
-    t0 = t1;
-  };
-
-  function<void()> KeepGoing = [&]() {
-    if (total < 15) {
-      g.Next(Print, KeepGoing);
-    } else {
-      Executor().GracefulShutdown();
-    }
-  };
-
-  // Create an executor for the scope of `main()`.
-  // NOTE(dkorolev): Important that this line happens after `Print` and `KeepGoing` are declared!
-  // Since otherwise they will be destructed before the instance of the `executor`, welcome to the horrors of C++.
-  ExecutorScope executor;
-
-  // Kick off the run.
-  // It will initiate the series of "call back-s", via the executor, from its thread.
-  KeepGoing();
-
-  cout << "main() done, but will wait for the executor to complete its tasks." << endl;
+  if (string("--example") == argv[argc - 1]) {
+    RunExampleCoroutine();
+  } else {
+    RunCoroFizzBuzz();
+  }
 }
