@@ -5,7 +5,6 @@
 #include <functional>
 #include <queue>
 #include <thread>
-#include <chrono>
 #include <future>
 #include <atomic>
 #include <mutex>
@@ -229,14 +228,13 @@ class ExecutorInstance {
   }
 };
 
+// The instance of the executor is created and owned by `ExecutorScope`.
 class ExecutorScope {
  private:
-  // The instance of the executor is created and owned by `ExecutorScope`.
   ExecutorInstance executor;
 
  public:
   ExecutorScope() { ExecutorForThisThread().Set(executor); }
-
   ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
