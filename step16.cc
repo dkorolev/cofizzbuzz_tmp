@@ -22,6 +22,7 @@ using std::function;
 using std::queue;
 using std::string;
 using std::to_string;
+using std::vector;
 using namespace std::chrono_literals;
 using std::atomic_bool;
 using std::atomic_int;
@@ -233,7 +234,7 @@ class ExecutorCoroutineScope {
 struct CoroutineRetvalHolderBase {
   mutable mutex mut;
   bool returned = false;
-  std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+  vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 };
 
 template <typename RETVAL>
