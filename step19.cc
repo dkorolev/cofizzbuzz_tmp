@@ -41,6 +41,7 @@ using std::shared_ptr;
 using std::terminate;
 using std::thread;
 using std::unique_ptr;
+using std::vector;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -240,7 +241,7 @@ class ExecutorCoroutineScope {
 struct CoroutineRetvalHolderBase {
   mutable mutex mut;
   bool returned = false;
-  std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+  vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 };
 
 template <typename RETVAL>
