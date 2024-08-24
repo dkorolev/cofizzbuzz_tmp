@@ -22,6 +22,7 @@ using std::function;
 using std::queue;
 using std::string;
 using std::to_string;
+using std::vector;
 using namespace std::chrono_literals;
 using std::atomic_bool;
 using std::atomic_int;
@@ -268,7 +269,7 @@ struct CoroutineBool {
     mutex mut;
     bool returned = false;
     bool value;
-    std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+    vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 
     CoroutineBool get_return_object() {
       if (coroutine_executor_lifetime) {
