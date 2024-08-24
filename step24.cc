@@ -6,7 +6,6 @@
 #include <functional>
 #include <queue>
 #include <thread>
-#include <chrono>  // NOT NEEDED!
 #include <future>
 #include <atomic>
 #include <mutex>
