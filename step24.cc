@@ -27,9 +27,7 @@
 
 using std::atomic_bool;
 using std::atomic_int;
-// using std::cout;
 using std::deque;
-// using std::endl;
 using std::flush;
 using std::function;
 using std::future;
