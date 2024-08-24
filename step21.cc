@@ -50,17 +50,6 @@ inline string& CurrentThreadName() {
   return current_thread_name;
 }
 
-/*
-struct TimestampMS final {
-  milliseconds time_point;
-  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {
-  }
-  int operator-(TimestampMS const& rhs) const {
-    return int((time_point - rhs.time_point).count());
-  }
-};
-*/
-
 class ExecutorInstance;
 
 struct ExecutorThreadLocalPlaceholder {
@@ -127,6 +116,7 @@ struct ExecutorStats {
 
 struct TimeUnits {
   uint64_t tu;
+  static TimeUnits Zero() { return TimeUnits{0}; }
   operator bool() const { return tu != 0; }
   bool operator<(TimeUnits rhs) const { return tu < rhs.tu; }
   TimeUnits operator+(TimeUnits delta) const { return TimeUnits{tu + delta.tu}; }
@@ -143,12 +133,11 @@ TimeUnits operator"" _tu(unsigned long long v) { return TimeUnits{v}; }
 class ExecutorInstance {
  private:
   thread worker;
-  // TimestampMS const t0;
   TimeUnits time_now = TimeUnits(0);
 
   bool executor_time_to_terminate_thread = false;
 
-  mutable mutex executor_mut;
+  mutable mutex mut;
   std::condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
@@ -169,7 +158,7 @@ class ExecutorInstance {
   function<void()> GetNextTask() {
     while (true) {
       {
-        unique_lock<mutex> lock(executor_mut);
+        unique_lock<mutex> lock(mut);
         if (executor_time_to_terminate_thread) {
           return nullptr;
         }
@@ -189,9 +178,8 @@ class ExecutorInstance {
           it_time_moment->second.erase(it_job);
           return extracted;
         } else {
-          // cout << "WAITING" << endl;
+          // Note that now this code is properly waiting on the condition variable!
           cv.wait(lock, [this]() { return !executor_time_to_terminate_thread && !jobs.empty(); });
-          // cout << "WAITING: DONE" << endl;
         }
       }
     }
@@ -239,7 +227,7 @@ class ExecutorInstance {
     coroutines.erase(it);
     if (coroutines.empty()) {
       {
-        lock_guard<mutex> lock(executor_mut);
+        lock_guard<mutex> lock(mut);
         executor_time_to_terminate_thread = true;
       }
       cv.notify_one();
@@ -258,7 +246,7 @@ class ExecutorInstance {
 
   void ScheduleNext(function<void()> code) {
     {
-      lock_guard<mutex> lock(executor_mut);
+      lock_guard<mutex> lock(mut);
       jobs[time_now].push_front(code);
     }
     cv.notify_one();
@@ -270,7 +258,7 @@ class ExecutorInstance {
       terminate();
     }
     {
-      lock_guard<mutex> lock(executor_mut);
+      lock_guard<mutex> lock(mut);
       jobs[time_now + delay].push_back(code);
     }
     cv.notify_one();
@@ -278,19 +266,18 @@ class ExecutorInstance {
 
   // Return time in units, mostly for demo purposes.
   uint64_t Now() const {
-    lock_guard<mutex> lock(executor_mut);
+    lock_guard<mutex> lock(mut);
     return time_now.AsNumber();
   }
 };
 
+// The instance of the executor is created and owned by `ExecutorScope`.
 class ExecutorScope {
  private:
-  // The instance of the executor is created and owned by `ExecutorScope`.
   ExecutorInstance executor;
 
  public:
   ExecutorScope() { ExecutorForThisThread().Set(executor); }
-
   ~ExecutorScope() { ExecutorForThisThread().Unset(executor); }
 };
 
