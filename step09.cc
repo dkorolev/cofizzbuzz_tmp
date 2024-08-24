@@ -1,5 +1,4 @@
-// Explicitly verbose, ugly event-driven logic. Doing the "next step" work as soon as all the inputs are ready. A
-// dedicated thread for each operation.
+// Explicitly verbose, ugly, event-driven logic. Work still initiated and executed by dedicated threads.
 
 #include <iostream>
 #include <string>
