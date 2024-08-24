@@ -1,5 +1,6 @@
-// Richer telemetry counters in debug mode.
+// The time is now simulated.
 
+#include <condition_variable>
 #include <iostream>
 #include <string>
 #include <functional>
@@ -16,45 +17,38 @@
 
 #ifdef DEBUG
 #define TELEMETRY
+#define PRINT_SIMULATED_TIME
 #endif
 
+using std::atomic_bool;
+using std::atomic_int;
 using std::cout;
+using std::deque;
 using std::endl;
 using std::flush;
 using std::function;
-using std::queue;
-using std::string;
-using std::to_string;
-using namespace std::chrono_literals;
-using std::atomic_bool;
-using std::atomic_int;
 using std::future;
 using std::lock_guard;
 using std::make_shared;
 using std::make_unique;
+using std::map;
 using std::multimap;
 using std::mutex;
 using std::promise;
+using std::queue;
 using std::set;
 using std::shared_ptr;
+using std::string;
 using std::terminate;
 using std::thread;
+using std::to_string;
+using std::unique_lock;
 using std::unique_ptr;
-using std::chrono::duration_cast;
-using std::chrono::milliseconds;
-using std::chrono::steady_clock;
-using std::this_thread::sleep_for;
 
 inline string& CurrentThreadName() {
   static thread_local string current_thread_name = "<a yet unnamed thread>";
   return current_thread_name;
 }
-
-struct TimestampMS final {
-  milliseconds time_point;
-  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
-  int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
-};
 
 class ExecutorInstance;
 
@@ -120,17 +114,34 @@ struct ExecutorStats {
 };
 #endif
 
+struct TimeUnits {
+  uint64_t tu;
+  static TimeUnits Zero() { return TimeUnits{0}; }
+  operator bool() const { return tu != 0; }
+  bool operator<(TimeUnits rhs) const { return tu < rhs.tu; }
+  TimeUnits operator+(TimeUnits delta) const { return TimeUnits{tu + delta.tu}; }
+  uint64_t AsNumber() const { return tu; }
+};
+
+inline std::ostream& operator<<(std::ostream& os, TimeUnits const& tu) {
+  os << tu.tu;
+  return os;
+}
+
+TimeUnits operator"" _tu(unsigned long long v) { return TimeUnits{v}; }
+
 class ExecutorInstance {
  private:
   thread worker;
-  TimestampMS const t0;
+  TimeUnits time_now = TimeUnits(0);
 
   bool executor_time_to_terminate_thread = false;
 
-  mutex mut;
+  mutable mutex mut;
+  std::condition_variable cv;
 
   // Store the jobs in a red-black tree, the `priority_queue` is not as clean syntax-wise in C++.
-  multimap<int, function<void()>> jobs;
+  map<TimeUnits, deque<function<void()>>> jobs;
 
   // A quick & hacky way to wait until everything is done, at scope destruction.
   mutex unlock_when_done;
@@ -147,22 +158,30 @@ class ExecutorInstance {
   function<void()> GetNextTask() {
     while (true) {
       {
-        lock_guard<mutex> lock(mut);
+        unique_lock<mutex> lock(mut);
         if (executor_time_to_terminate_thread) {
           return nullptr;
         }
+        while (!jobs.empty() && jobs.begin()->second.empty()) {
+          jobs.erase(jobs.begin());
+        }
         if (!jobs.empty()) {
-          auto it = jobs.begin();
-          if ((TimestampMS() - t0) >= it->first) {
-            function<void()> extracted = it->second;
-            jobs.erase(it);
-            return extracted;
+          auto it_time_moment = jobs.begin();
+          if (time_now < it_time_moment->first) {
+#ifdef PRINT_SIMULATED_TIME
+            cout << "Advancing time from " << time_now << " to " << it_time_moment->first << endl;
+#endif
+            time_now = it_time_moment->first;
           }
+          auto it_job = it_time_moment->second.begin();
+          function<void()> extracted = *it_job;
+          it_time_moment->second.erase(it_job);
+          return extracted;
+        } else {
+          // Note that now this code is properly waiting on the condition variable!
+          cv.wait(lock, [this]() { return !executor_time_to_terminate_thread && !jobs.empty(); });
         }
       }
-      // NOTE(dkorolev): This is a "busy wait" loop, but it does the job for illustrative purposes.
-      //                 Should of course `wait` + `wait_for` on a `condition_variable` if this code goes to prod.
-      sleep_for(100us);  // 0.1ms.
     }
   }
 
@@ -194,7 +213,7 @@ class ExecutorInstance {
 
   friend class ExecutorCoroutineScope;
   void Register(CoroutineLifetime* coro) {
-    Schedule(0ms, [coro]() { coro->ResumeFromExecutorWorkerThread(); });
+    ScheduleNext([coro]() { coro->ResumeFromExecutorWorkerThread(); });
     if (coroutines.count(coro)) {
       terminate();
     }
@@ -207,8 +226,11 @@ class ExecutorInstance {
     }
     coroutines.erase(it);
     if (coroutines.empty()) {
-      lock_guard<mutex> lock(mut);
-      executor_time_to_terminate_thread = true;
+      {
+        lock_guard<mutex> lock(mut);
+        executor_time_to_terminate_thread = true;
+      }
+      cv.notify_one();
     }
   }
 
@@ -222,9 +244,30 @@ class ExecutorInstance {
     unlock_when_done.lock();
   }
 
-  void Schedule(milliseconds delay, function<void()> code) {
+  void ScheduleNext(function<void()> code) {
+    {
+      lock_guard<mutex> lock(mut);
+      jobs[time_now].push_front(code);
+    }
+    cv.notify_one();
+  }
+
+  void Schedule(TimeUnits delay, function<void()> code) {
+    if (!delay) {
+      cout << "`Schedule()` is for the future, use `ScheduleNext()` for the present." << endl;
+      terminate();
+    }
+    {
+      lock_guard<mutex> lock(mut);
+      jobs[time_now + delay].push_back(code);
+    }
+    cv.notify_one();
+  }
+
+  // Return time in units, mostly for demo purposes.
+  uint64_t Now() const {
     lock_guard<mutex> lock(mut);
-    jobs.emplace((TimestampMS() - t0) + delay.count(), code);
+    return time_now.AsNumber();
   }
 };
 
@@ -412,15 +455,15 @@ struct Async : CoroutineAwaitResume<RETVAL> {
 
 class Sleep final {
  private:
-  milliseconds const ms;
+  TimeUnits const delay;
 
  public:
-  explicit Sleep(milliseconds ms) : ms(ms) {}
+  explicit Sleep(TimeUnits delay) : delay(delay) {}
 
   constexpr bool await_ready() noexcept { return false; }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
-    Executor().Schedule(ms, [h]() {
+    Executor().Schedule(delay, [h]() {
 #ifdef TELEMETRY
       ++Executor().stats.total_sleep_resumes;
 #endif
@@ -435,33 +478,37 @@ inline Async<bool> IsEven(int x) {
   // Confirm multiple suspend/resume steps work just fine.
   // Just `co_return ((x % 2) == 0);` works too, of course.
   if ((x % 2) == 0) {
-    co_await Sleep(1ms);
-    co_await Sleep(1ms);
+    co_await Sleep(1_tu);
+    co_await Sleep(1_tu);
     co_return true;
   } else {
-    co_await Sleep(1ms);
-    co_await Sleep(1ms);
-    co_await Sleep(1ms);
+    co_await Sleep(1_tu);
+    co_await Sleep(1_tu);
+    co_await Sleep(1_tu);
     co_return false;
   }
 }
 
-inline Async<void> CallSleep(milliseconds ms) {
-  co_await Sleep(ms);
+inline Async<void> CallSleep(TimeUnits delay) {
+  co_await Sleep(delay);
   co_return;
 }
 
 inline Async<int> Square(int x) {
-  co_await CallSleep(1ms);
+  co_await CallSleep(10_tu);
   co_return (x * x);
 }
 
 void RunExampleCoroutine() {
   function<Async<>(string)> MultiStepFunction = [](string s) -> Async<> {
     for (int i = 1; i <= 10; ++i) {
-      co_await Sleep(100ms);
-      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false")
-           << ", square=" << flush << co_await Square(i) << endl;
+      co_await Sleep(100_tu);
+      cout << s << ", i=" << i << "/10, even=..." << endl;
+      bool even = co_await IsEven(i);
+      auto s_even = even ? "true" : "false";
+      cout << s << ", i=" << i << "/10, even=" << s_even << ", square=..." << endl;
+      auto square = co_await Square(i);
+      cout << s << ", i=" << i << "/10, even=" << s_even << ", square=" << square << endl;
     }
   };
 
@@ -480,14 +527,13 @@ void RunExampleCoroutine() {
 inline bool SyncIsDivisibleByThree(int value) { return ((value % 3) == 0); }
 
 inline Async<bool> IsDivisibleByThree(int value) {
-  co_await Sleep(10ms);
+  co_await Sleep(10_tu);
   co_return (value % 3) == 0;
 }
 
 inline Async<bool> IsDivisibleByFive(int value) {
-  // Demo/test: going from one sleep of 10ms to two sleeps of 5ms each bumps worker steps count from 76 to 91.
-  co_await Sleep(5ms);
-  co_await Sleep(5ms);
+  co_await Sleep(5_tu);
+  co_await Sleep(5_tu);
   co_return (value % 5) == 0;
 }
 
@@ -497,7 +543,7 @@ inline Async<> CoroFizzBuzz(function<Async<bool>(string)> next) {
     ++value;
 #if 1
     // This commit makes "casting" `bool` into `Async<bool>` perfectly legal.
-    // This `#if 1` takes the "total number of steps" down to 61 from 91.
+    // Note that this change also breaks `g++`, and this is why this demo is in `clang++`.
     Async<bool> awaitable_d3 = SyncIsDivisibleByThree(value);
 #else
     Async<bool> awaitable_d3 = IsDivisibleByThree(value);
@@ -525,14 +571,12 @@ inline Async<> CoroFizzBuzz(function<Async<bool>(string)> next) {
 
 void RunCoroFizzBuzz() {
   int total = 0;
-  auto t0 = TimestampMS();
 
   ExecutorScope executor;
 
-  CoroFizzBuzz([&total, &t0](string s) -> Async<bool> {
-    auto t1 = TimestampMS();
-    cout << ++total << " : " << s << ", in " << (t1 - t0) << "ms, from thread " << CurrentThreadName() << endl;
-    t0 = t1;
+  CoroFizzBuzz([&total](string s) -> Async<bool> {
+    cout << ++total << " : " << s << ", at " << Executor().Now() << " time units, from thread " << CurrentThreadName()
+         << endl;
     co_return (total < 15);
   });
 
