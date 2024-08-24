@@ -1,4 +1,4 @@
-// Introducing the executor: the thread that runs all the async stuff.
+// Leveraging the thread-local-singleton executor in the coroutine-handling code.
 
 #include <iostream>
 #include <string>
