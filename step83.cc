@@ -1,4 +1,4 @@
-// Introduced `struct Coroutine` to contain the coroutine-related code.
+// Introducing the executor: the thread that runs all the async stuff.
 
 #include <iostream>
 #include <string>
@@ -11,10 +11,13 @@
 #include <mutex>
 #include <memory>
 #include <map>
+#include <set>
 #include <coroutine>
+#include <vector>
 
 using std::cout;
 using std::endl;
+using std::flush;
 using std::function;
 using std::queue;
 using std::string;
@@ -29,9 +32,11 @@ using std::make_unique;
 using std::multimap;
 using std::mutex;
 using std::promise;
+using std::set;
 using std::shared_ptr;
 using std::terminate;
 using std::thread;
+using std::unique_ptr;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -88,6 +93,11 @@ ExecutorThreadLocalPlaceholder& ExecutorForThisThread() {
   return p;
 }
 
+struct CoroutineLifetime {
+  virtual ~CoroutineLifetime() = default;
+  virtual void ResumeFromExecutorWorkerThread() = 0;
+};
+
 class ExecutorInstance {
  private:
   thread worker;
@@ -102,6 +112,11 @@ class ExecutorInstance {
 
   // A quick & hacky way to wait until everything is done, at scope destruction.
   mutex unlock_when_done;
+
+  // The coroutines (coroutine frames, or fibers), that are currently running.
+  // Will declare termination once the last one is done.
+  // NOTE(dkorolev): Even a plain inc/dec counter would do. But this example is extra safe and extra illustative.
+  set<CoroutineLifetime*> coroutines;
 
  protected:
   friend class ExecutorScope;
@@ -152,6 +167,25 @@ class ExecutorInstance {
     }
   }
 
+  friend class ExecutorCoroutineScope;
+  void Register(CoroutineLifetime* coro) {
+    Schedule(0ms, [coro]() { coro->ResumeFromExecutorWorkerThread(); });
+    if (coroutines.count(coro)) {
+      terminate();
+    }
+    coroutines.insert(coro);
+  }
+  void Unregister(CoroutineLifetime* coro) {
+    auto it = coroutines.find(coro);
+    if (it == coroutines.end()) {
+      terminate();
+    }
+    coroutines.erase(it);
+    if (coroutines.empty()) {
+      GracefulShutdown();
+    }
+  }
+
  public:
   ~ExecutorInstance() {
     worker.join();
@@ -183,45 +217,124 @@ class ExecutorScope {
 
 inline ExecutorInstance& Executor() { return ExecutorForThisThread().Instance(); }
 
-// The "minimalistic" coroutine runner.
-// It does `.resume()` once, and then waits until `final_suspend` was invoked on its `promise_type`.
+class ExecutorCoroutineScope {
+ private:
+  CoroutineLifetime* coro;
+
+ public:
+  ExecutorCoroutineScope(CoroutineLifetime* coro) : coro(coro) { Executor().Register(coro); }
+  ~ExecutorCoroutineScope() { Executor().Unregister(coro); }
+};
+
+// The "minimalistic" coroutine runner integrated with the executor.
+// Instructs the executor to call `.resume()` once.
+// Tracks its own lifetime with the executor, so that the executor knows when all the active coroutines are done.
 struct Coroutine {
-  struct promise_type {
-    mutex unlocked_when_coro_done;
+  struct promise_type : CoroutineLifetime {
+    unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
 
-    using handle_type = std::coroutine_handle<promise_type>;
+    Coroutine get_return_object() {
+      if (coroutine_executor_lifetime) {
+        // Internal error, should only have one `get_return_object` call per instance.
+        terminate();
+      }
+      coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
+      return Coroutine();
+    }
 
-    Coroutine get_return_object() { return Coroutine(handle_type::from_promise(*this), unlocked_when_coro_done); }
-
-    std::suspend_always initial_suspend() noexcept { return {}; }
+    std::suspend_always initial_suspend() noexcept {
+      // Should be `.resume()`-d via `.ResumeFromExecutorWorkerThread()` from the executor.
+      return {};
+    }
 
     std::suspend_never final_suspend() noexcept {
-      unlocked_when_coro_done.unlock();
-      Executor().GracefulShutdown();
+      coroutine_executor_lifetime = nullptr;
       return {};
     }
 
     void return_void() noexcept {}
 
-    void unhandled_exception() noexcept {}
+    void unhandled_exception() noexcept { terminate(); }
+
+    void ResumeFromExecutorWorkerThread() override {
+      std::coroutine_handle<promise_type>::from_promise(*this).resume();
+    }
+  };
+};
+
+struct CoroutineBool {
+  struct promise_type : CoroutineLifetime {
+    unique_ptr<ExecutorCoroutineScope> coroutine_executor_lifetime;
+    mutex mut;
+    bool returned = false;
+    bool value;
+    std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+
+    CoroutineBool get_return_object() {
+      if (coroutine_executor_lifetime) {
+        // Internal error, should only have one `get_return_object` call per instance.
+        terminate();
+      }
+      coroutine_executor_lifetime = make_unique<ExecutorCoroutineScope>(this);
+      return CoroutineBool(*this);
+    }
+
+    std::suspend_always initial_suspend() noexcept {
+      // Should be `.resume()`-d via `.ResumeFromExecutorWorkerThread()` from the executor.
+      return {};
+    }
+
+    std::suspend_never final_suspend() noexcept {
+      coroutine_executor_lifetime = nullptr;
+      return {};
+    }
+
+    void return_value(bool v) noexcept {
+      {
+        lock_guard<mutex> lock(mut);
+        if (returned) {
+          terminate();
+        }
+        returned = true;
+        value = v;
+      }
+      for (auto& h : to_resume) {
+        h.resume();
+      }
+    }
+
+    void unhandled_exception() noexcept { terminate(); }
+
+    void ResumeFromExecutorWorkerThread() override {
+      std::coroutine_handle<promise_type>::from_promise(*this).resume();
+    }
   };
 
-  explicit Coroutine(promise_type::handle_type coro, mutex& unlocked_when_coro_done) noexcept
-      : coro(coro), unlocked_when_coro_done(unlocked_when_coro_done) {
-    ExecutorForThisThread().FailIfNoExecutor();
-    unlocked_when_coro_done.lock();
+  promise_type& self;
+  explicit CoroutineBool(promise_type& self) : self(self) {}
+
+  bool await_ready() noexcept {
+    lock_guard<mutex> lock(self.mut);
+    return self.returned;
   }
 
-  void RunToCompletion() noexcept {
-    // Resume once.
-    coro.resume();
-    // Wait until the coroutine completes.
-    unlocked_when_coro_done.lock();
+  void await_suspend(std::coroutine_handle<> h) noexcept {
+    lock_guard<mutex> lock(self.mut);
+    if (self.returned) {
+      h.resume();
+    } else {
+      self.to_resume.push_back(h);
+    }
   }
 
- private:
-  promise_type::handle_type coro;
-  mutex& unlocked_when_coro_done;
+  bool await_resume() noexcept {
+    lock_guard<mutex> lock(self.mut);
+    if (!self.returned) {
+      // Internal error: `await_resume()` should only be called once the result is available.
+      terminate();
+    }
+    return self.value;
+  }
 };
 
 class Sleep final {
@@ -240,17 +353,39 @@ class Sleep final {
   void await_resume() noexcept {}
 };
 
+inline CoroutineBool IsEven(int x) {
+  // Confirm multiple suspend/resume steps work just fine.
+  // Just `co_return ((x % 2) == 0);` works too, of course.
+  if ((x % 2) == 0) {
+    co_await Sleep(1ms);
+    co_await Sleep(1ms);
+    co_return true;
+  } else {
+    co_await Sleep(1ms);
+    co_await Sleep(1ms);
+    co_await Sleep(1ms);
+    co_return false;
+  }
+}
+
 void RunExampleCoroutine() {
   function<Coroutine(string)> MultiStepFunction = [](string s) -> Coroutine {
     for (int i = 1; i <= 10; ++i) {
       co_await Sleep(100ms);
-      cout << s << ", i=" << i << "/10." << endl;
+      cout << s << ", i=" << i << "/10, even=" << flush << ((co_await IsEven(i)) ? "true" : "false") << "." << endl;
     }
   };
 
   ExecutorScope executor;
-  Coroutine coro = MultiStepFunction("The MultiStepFunction");
-  coro.RunToCompletion();
+
+  {
+    // Call the coroutine. The return object, of type `Coroutine`, will go out of scope, which is normal.
+    MultiStepFunction("The MultiStepFunction");
+  }
+
+  // The destructor of `ExecutorScope` will wait for the running coroutine(s) to complete.
+  // To be more precise, it will wait until it is shut down gracefully, and it will be shut down gracefully
+  // as soon as the last outstanding coroutine is done with its execution!
 }
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
