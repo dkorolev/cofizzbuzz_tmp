@@ -37,6 +37,7 @@ using std::shared_ptr;
 using std::terminate;
 using std::thread;
 using std::unique_ptr;
+using std::vector;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -269,7 +270,7 @@ struct CoroutineReturning {
     mutex mut;
     bool returned = false;
     RETVAL value;
-    std::vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
+    vector<std::coroutine_handle<>> to_resume;  // Other coroutines waiting awaiting on this one returning.
 
     CoroutineReturning get_return_object() {
       if (coroutine_executor_lifetime) {
