@@ -1,10 +1,11 @@
-// Now "async"-style `IsDivisibleBy{Three,Five}`, a.k.a. the "callback hell".
+// Measuring the time each step takes, confirming it's 20ms == 10ms + 10ms.
 
 #include <iostream>
 #include <string>
 #include <functional>
 #include <queue>
 #include <thread>
+#include <chrono>
 
 using std::cout;
 using std::endl;
@@ -13,7 +14,16 @@ using std::queue;
 using std::string;
 using std::to_string;
 using namespace std::chrono_literals;
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
 using std::this_thread::sleep_for;
+
+struct TimestampMS final {
+  milliseconds time_point;
+  explicit TimestampMS() : time_point(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()) {}
+  int operator-(TimestampMS const& rhs) const { return int((time_point - rhs.time_point).count()); }
+};
 
 inline void IsDivisibleByThree(int value, function<void(bool)> cb) {
   sleep_for(10ms);
@@ -67,8 +77,14 @@ int main() {
 
   FizzBuzzGenerator g;
   int total = 0;
+  auto t0 = TimestampMS();
 
-  function<void(string)> Print = [&total](string s) { cout << ++total << " : " << s << endl; };
+  function<void(string)> Print = [&total, &t0](string s) {
+    auto t1 = TimestampMS();
+    cout << ++total << " : " << s << " (in " << (t1 - t0) << "ms)" << endl;
+    t0 = t1;
+  };
+
   function<void()> KeepGoing = [&]() {
     if (total < 15) {
       g.Next(Print, KeepGoing);
