@@ -1,4 +1,4 @@
-// Using the `Async<>` type for real.
+// Using the `Coro<T>` type for real.
 
 #include <iostream>
 #include <string>

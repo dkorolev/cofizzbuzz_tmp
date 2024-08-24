@@ -1,4 +1,4 @@
-// Executor counters and debug logging.
+// Executor counters and debug logging. And `Coro<T>` is finally `Async<T>`, as it should be.
 
 #include <iostream>
 #include <string>
