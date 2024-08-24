@@ -1,4 +1,4 @@
-// Debug logging of counters always on in DEBUG mode.
+// Executor counters and debug logging.
 
 #include <iostream>
 #include <string>
